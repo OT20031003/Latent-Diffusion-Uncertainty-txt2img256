@@ -241,19 +241,25 @@ class DDIMSampler(object):
                     eta=0., mask=None, x0=None, temperature=1., noise_dropout=0.,
                     score_corrector=None, corrector_kwargs=None, verbose=True,
                     log_every_t=100, unconditional_guidance_scale=1., unconditional_conditioning=None,
-                    uncertainty_interval=10, 
+                    uncertainty_interval=None, 
                     **kwargs):
         
+        # 1. 拡散モデルのSNRスケジュールを取得
         alphas = self.model.alphas_cumprod.cpu().numpy()
         diffusion_snrs = alphas / (1 - alphas)
         
+        # 2. チャネルSNRに最も近い拡散時刻 t_start を探索
         target_snr = 10 ** (snr_db / 10.0)
         t_start_idx = np.abs(diffusion_snrs - target_snr).argmin()
         
         if verbose:
             print(f"Channel SNR: {snr_db} dB -> Starting Diffusion Step: {t_start_idx} (Model SNR: {diffusion_snrs[t_start_idx]:.2f})")
 
+        # 3. DDIMスケジュールの作成
         self.make_schedule(ddim_num_steps=S, ddim_eta=eta, verbose=False)
+        
+        # 全1000ステップ中の t_start_idx に最も近い DDIMステップを探す
+        closest_ddim_idx = np.abs(self.ddim_timesteps - t_start_idx).argmin()
         timesteps = np.flip(self.ddim_timesteps)
         
         start_idx = 0
@@ -262,16 +268,22 @@ class DDIMSampler(object):
                 start_idx = i
                 break
         
+        # 4. 開始状態 x_T の準備
         alpha_at_start = alphas[t_start_idx]
         alpha_at_start = torch.tensor(alpha_at_start, device=self.model.device, dtype=torch.float32)
-        
         x_start = torch.sqrt(alpha_at_start) * noisy_latent
         
+        # 5. サンプリングループ
         C, H, W = shape
+        size = (batch_size, C, H, W)
         samples = x_start
         
-        # 変更点: 不確実性マップの履歴を保存するリスト
-        uncertainty_history = []
+        # === 高速化: オンライン分散計算用の変数を初期化 ===
+        # 履歴リスト(pred_x0_history)は廃止し、和と二乗和のみを保持します
+        sum_pred_x0 = torch.zeros(size, device=self.model.device)
+        sum_sq_pred_x0 = torch.zeros(size, device=self.model.device)
+        step_count = 0
+        # ============================================
 
         iterator = tqdm(timesteps[start_idx:], desc='AWGN Denoising', total=len(timesteps)-start_idx) if verbose else timesteps[start_idx:]
 
@@ -286,20 +298,29 @@ class DDIMSampler(object):
                                       unconditional_guidance_scale=unconditional_guidance_scale)
             samples, pred_x0 = outs
             
-            # 不確実性の測定
-            if i % uncertainty_interval == 0: 
-                 unc_map = self.estimate_uncertainty(
-                     pred_x0, ts, shape, # size引数はshapeなので修正
-                     num_samples=5,
-                     c=unconditional_conditioning,
-                     unconditional_guidance_scale=unconditional_guidance_scale,
-                     unconditional_conditioning=unconditional_conditioning
-                 )
-                 # ステップ数と不確実性マップのペアを保存
-                 uncertainty_history.append((step, unc_map))
+            # === 高速化: GPU上で累積加算 (CPUへの転送なし) ===
+            sum_pred_x0 += pred_x0
+            sum_sq_pred_x0 += pred_x0 ** 2
+            step_count += 1
+            # ============================================
             
             if callback: callback(i)
             if img_callback: img_callback(samples, i)
 
-        # 履歴リストを返す
+        # === 高速化: 最終的な分散を計算 ===
+        # Var(X) = E[X^2] - (E[X])^2
+        if step_count > 0:
+            mean = sum_pred_x0 / step_count
+            mean_sq = sum_sq_pred_x0 / step_count
+            temporal_variance = mean_sq - mean ** 2
+            # 負の値になるのを防ぐ (数値誤差対策)
+            temporal_variance = torch.relu(temporal_variance)
+        else:
+            temporal_variance = torch.zeros(size, device=self.model.device)
+            
+        # img2img.py との互換性のためリスト形式で返す
+        # (ステップ0の時点で確定した不確実性マップとして返す)
+        uncertainty_history = [(0, temporal_variance)]
+        # ==================================
+
         return samples, uncertainty_history
