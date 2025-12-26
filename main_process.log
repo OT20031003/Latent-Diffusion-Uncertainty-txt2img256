@@ -1,5 +1,5 @@
 nohup: ignoring input
 --- Exp1: Alpha Sensitivity (SNR -15dB, r=0.2) ---
---- Exp2: Robustness (Alpha 0.6) ---
+--- Exp2: Robustness (Alpha 0.3) ---
 --- Exp3: Low Retransmission Rate ---
 All experiments completed.
