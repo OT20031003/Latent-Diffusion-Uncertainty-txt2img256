@@ -1,10 +1,5 @@
 nohup: ignoring input
---- Job 1 start ---
---- Job 2 start ---
---- Job 3 start ---
---- Job 4 start ---
---- Job 5 start ---
---- Job 6 start ---
---- Job 7 start ---
---- Job 8 start ---
-complete
+--- Exp1: Alpha Sensitivity (SNR -15dB, r=0.2) ---
+--- Exp2: Robustness (Alpha 0.6) ---
+--- Exp3: Low Retransmission Rate ---
+All experiments completed.

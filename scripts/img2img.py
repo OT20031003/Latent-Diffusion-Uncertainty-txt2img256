@@ -102,6 +102,53 @@ def calculate_id_loss(img1, img2, net):
     cosine_sim = F.cosine_similarity(emb1, emb2)
     return (1.0 - cosine_sim).item()
 
+def compute_structural_uncertainty(uncertainty_map, latents_pass1, alpha=0.6):
+    """
+    不確実性マップに、Latent空間での構造情報（エッジ/変化量）重みを付与する。
+    これにより、「背景のノイズ」ではなく「物体の輪郭付近の迷い」を強調する。
+    
+    Args:
+        uncertainty_map (torch.Tensor): [B, 1, H, W] 従来の不確実性マップ
+        latents_pass1 (torch.Tensor): [B, C, H, W] Pass 1で復元されたLatent
+        alpha (float): 構造情報の重み (0.0~1.0). 0.6程度推奨。
+    
+    Returns:
+        weighted_uncertainty (torch.Tensor): 重み付けされた新しいマップ
+    """
+    # 1. Latent空間での空間勾配（エッジ）を計算
+    # 全チャネルの絶対値平均をとって構造を見る
+    l_avg = torch.mean(torch.abs(latents_pass1), dim=1, keepdim=True) # [B, 1, H, W]
+    
+    # 空間微分 (Spatial Gradients)
+    # dy: 上下画素の差分, dx: 左右画素の差分
+    # パディングしてサイズを維持
+    dy = torch.abs(l_avg[:, :, 1:, :] - l_avg[:, :, :-1, :])
+    dy = F.pad(dy, (0, 0, 0, 1)) # 下側にパディング
+    
+    dx = torch.abs(l_avg[:, :, :, 1:] - l_avg[:, :, :, :-1])
+    dx = F.pad(dx, (0, 1, 0, 0)) # 右側にパディング
+    
+    # 勾配の強さ (Saliency Map)
+    gradient_magnitude = torch.sqrt(dx**2 + dy**2 + 1e-8)
+    
+    # 2. 正規化 (Min-Max Normalization to 0-1)
+    def normalize_minmax(x):
+        # バッチごとに正規化
+        # x: [B, 1, H, W]
+        min_val = x.view(x.shape[0], -1).min(dim=1, keepdim=True)[0].view(x.shape[0], 1, 1, 1)
+        max_val = x.view(x.shape[0], -1).max(dim=1, keepdim=True)[0].view(x.shape[0], 1, 1, 1)
+        return (x - min_val) / (max_val - min_val + 1e-8)
+    
+    unc_norm = normalize_minmax(uncertainty_map)
+    grad_norm = normalize_minmax(gradient_magnitude)
+    
+    # 3. 統合 (Fusion)
+    # 不確実性が高く、かつ構造情報(エッジ)がある場所を強調
+    # (1-alpha) * Uncertainty + alpha * (Uncertainty * Gradient)
+    weighted_map = (1 - alpha) * unc_norm + alpha * (unc_norm * grad_norm)
+    
+    return weighted_map
+
 def save_heatmap_with_correlation(uncertainty_tensor, error_tensor, output_dir, base_fname, step_label, target_size=(256, 256)):
     """
     不確実性マップ保存 & 誤差相関計算
@@ -216,7 +263,6 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
                       loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_save_dir=None):
     """
     画像の保存とメトリック計算を行うヘルパー関数
-    【修正】fid_save_dir引数を追加し、FID用の画像保存に対応
     """
     gt_01 = torch.clamp((batch_input + 1.0) / 2.0, 0.0, 1.0)
     rec_01 = torch.clamp((x_rec + 1.0) / 2.0, 0.0, 1.0)
@@ -238,11 +284,8 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         img.save(save_path)
 
-        # 【追加】FID用ディレクトリへの保存
+        # FID用ディレクトリへの保存
         if fid_save_dir is not None:
-            # FID計算ツールはファイル名ベースで比較することが多いため、
-            # 元のファイル名で保存する（またはsuffix付きで一意にする）
-            # ここではGTと対応させるため、元のファイル名 fname を使用して保存します
             fid_save_path = os.path.join(fid_save_dir, fname)
             img.save(fid_save_path)
 
@@ -261,7 +304,7 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
     return results
 
 def main():
-    parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation with Semantic Masking")
+    parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation with Structural Uncertainty")
     parser.add_argument("--input_dir", type=str, default="input_dir", help="Path to input images")
     parser.add_argument("--output_dir", type=str, default="results/", help="Path to output dir")
     parser.add_argument("--snr", type=float, default=-15.0, help="Channel SNR in dB")
@@ -271,6 +314,8 @@ def main():
     parser.add_argument("--ddim_steps", type=int, default=200)
     parser.add_argument("--batch_size", type=int, default=10)
     parser.add_argument("--face_model_path", type=str, default="models/face_parsing/79999_iter.pth", help="Path to face parsing BiSeNet model")
+    # 【追加】構造情報の重み係数
+    parser.add_argument("--struct_alpha", type=float, default=0.6, help="Weight for structural uncertainty (0.0-1.0)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -294,29 +339,34 @@ def main():
     loss_fn_id = InceptionResnetV1(pretrained='vggface2').cuda().eval() if IDLOSS_AVAILABLE else None
 
     image_files = sorted([f for f in os.listdir(args.input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
-    print(f"Starting simulation: SNR={args.snr}dB, Retransmission Rate={args.retransmission_rate*100}%")
+    # -----------------------------------------------------------------------------------------------------
+    # 【変更点】ログ出力とディレクトリ名にAlphaを含めるように変更
+    # -----------------------------------------------------------------------------------------------------
+    print(f"Starting simulation: SNR={args.snr}dB, Retransmission Rate={args.retransmission_rate*100}%, Alpha={args.struct_alpha}")
 
     # 実験全体の結果を保存するディレクトリ
-    experiment_dir = os.path.join(args.output_dir, f"snr{args.snr}dB_rate{args.retransmission_rate}")
+    # ディレクトリ名に alpha 値を追加して重複を防ぐ
+    experiment_dir = os.path.join(args.output_dir, f"snr{args.snr}dB_rate{args.retransmission_rate}_alpha{args.struct_alpha}")
     os.makedirs(experiment_dir, exist_ok=True)
 
-    # 【追加】FID計算用のディレクトリ準備
+    # FID計算用のディレクトリ準備
     fid_root = os.path.join(experiment_dir, "fid_images")
     fid_dirs = {
         "gt": os.path.join(fid_root, "gt"),
         "pass1": os.path.join(fid_root, "pass1"),
-        "pass2_uncertainty": os.path.join(fid_root, "pass2_uncertainty"),
+        "pass2_structural": os.path.join(fid_root, "pass2_structural"),
         "pass2_semantic": os.path.join(fid_root, "pass2_semantic"),
         "pass2_random": os.path.join(fid_root, "pass2_random"),
     }
-    # FIDが有効ならディレクトリを作成
     if FID_AVAILABLE:
         for d in fid_dirs.values():
             os.makedirs(d, exist_ok=True)
     
     all_results = {}
-    json_filename = f"metrics_snr{args.snr}dB_rate{args.retransmission_rate}.json"
+    # JSONファイル名にも alpha 値を追加
+    json_filename = f"metrics_snr{args.snr}dB_rate{args.retransmission_rate}_alpha{args.struct_alpha}.json"
     json_path = os.path.join(experiment_dir, json_filename)
+    # -----------------------------------------------------------------------------------------------------
 
     class NumpyEncoder(json.JSONEncoder):
         def default(self, obj):
@@ -324,7 +374,6 @@ def main():
             elif isinstance(obj, np.ndarray): return obj.tolist()
             return super(NumpyEncoder, self).default(obj)
 
-    # 保存処理関数
     def save_final_results(final_data):
         try:
             with open(json_path, 'w') as f:
@@ -373,7 +422,6 @@ def main():
                     img_data = (gt_np[j] * 255).astype(np.uint8)
                     Image.fromarray(img_data).save(save_path)
 
-                    # 【追加】FID用ディレクトリへのGT保存
                     if FID_AVAILABLE:
                         Image.fromarray(img_data).save(os.path.join(fid_dirs["gt"], fname))
 
@@ -397,7 +445,7 @@ def main():
                 pass1_results = evaluate_and_save(
                     valid_x_rec_pass1, valid_batch_input, batch_files, batch_out_dir, "pass1",
                     loss_fn_lpips, loss_fn_dists, loss_fn_id,
-                    fid_save_dir=fid_dirs["pass1"] if FID_AVAILABLE else None # 【追加】FID保存
+                    fid_save_dir=fid_dirs["pass1"] if FID_AVAILABLE else None
                 )
 
                 error_map_pass1 = torch.mean((valid_batch_input - valid_x_rec_pass1) ** 2, dim=1)
@@ -407,14 +455,24 @@ def main():
                 )
                 print(f"  [Pass 1] Uncertainty-Error Correlation: {sum(corrs_pass1)/len(corrs_pass1):.4f}")
 
-                # === Retransmission Logic (Method 1: High Uncertainty) ===
-                pass2_unc_results = {}
+                # === Retransmission Logic (Method 1: Structural Uncertainty) ===
+                pass2_struc_results = {}
                 if args.retransmission_rate > 0.0 and uncertainty_map is not None:
-                    print(f"  [Retransmission - High Uncertainty] Rate={args.retransmission_rate*100}%")
-                    mask_unc = create_retransmission_mask(uncertainty_map, args.retransmission_rate)
+                    print(f"  [Retransmission - Structural Uncertainty] Rate={args.retransmission_rate*100}% (alpha={args.struct_alpha})")
+                    
+                    structural_unc_map = compute_structural_uncertainty(
+                        uncertainty_map, samples_pass1, alpha=args.struct_alpha
+                    )
+                    
+                    mask_unc = create_retransmission_mask(structural_unc_map, args.retransmission_rate)
                     
                     # マスク保存
-                    save_mask_tensor(mask_unc, batch_files, batch_out_dir, "mask_unc")
+                    save_mask_tensor(mask_unc, batch_files, batch_out_dir, "mask_structural")
+
+                    # マップ自体も保存（可視化用）
+                    save_heatmap_with_correlation(
+                        structural_unc_map[:actual_bs], error_map_pass1, batch_out_dir, batch_files, "map_structural"
+                    )
 
                     samples_unc, _ = sampler.sample_inpainting_awgn(
                         S=args.ddim_steps, batch_size=args.batch_size, shape=z0.shape[1:],
@@ -427,13 +485,13 @@ def main():
                     
                     x_rec_unc = model.decode_first_stage(samples_unc)
                     valid_x_rec_unc = x_rec_unc[:actual_bs]
-                    pass2_unc_results = evaluate_and_save(
-                        valid_x_rec_unc, valid_batch_input, batch_files, batch_out_dir, "pass2_unc",
+                    pass2_struc_results = evaluate_and_save(
+                        valid_x_rec_unc, valid_batch_input, batch_files, batch_out_dir, "pass2_structural",
                         loss_fn_lpips, loss_fn_dists, loss_fn_id,
-                        fid_save_dir=fid_dirs["pass2_uncertainty"] if FID_AVAILABLE else None # 【追加】FID保存
+                        fid_save_dir=fid_dirs["pass2_structural"] if FID_AVAILABLE else None
                     )
 
-                # === Retransmission Logic (Method 3: Semantic/Face-aware) ===
+                # === Retransmission Logic (Method 2: Semantic/Face-aware) ===
                 pass2_sem_results = {}
                 if args.retransmission_rate > 0.0 and uncertainty_map is not None and face_parser is not None:
                     print(f"  [Retransmission - Semantic] Rate={args.retransmission_rate*100}%")
@@ -444,14 +502,12 @@ def main():
                     for j in range(actual_bs):
                         img_tensor = valid_x_rec_pass1[j:j+1] 
                         try:
-                            parsing_map = face_parser.get_parsing_map(img_tensor) # -> (H_img, W_img) numpy
+                            parsing_map = face_parser.get_parsing_map(img_tensor)
                             
-                            # セグメンテーションマップ保存 (視認性確保のため x13 程度で輝度を持ち上げ)
                             fname_no_ext = os.path.splitext(batch_files[j])[0]
                             seg_save_name = f"{fname_no_ext}_segmap.png"
                             seg_save_path = os.path.join(batch_out_dir, str(j), seg_save_name)
                             os.makedirs(os.path.dirname(seg_save_path), exist_ok=True)
-                            
                             vis_seg_map = (parsing_map * 13).astype(np.uint8)
                             Image.fromarray(vis_seg_map, mode='L').save(seg_save_path)
 
@@ -460,21 +516,15 @@ def main():
                             parsing_map = np.zeros((img_tensor.shape[2], img_tensor.shape[3]), dtype=np.uint8)
 
                         u_map_single = unc_np[j].squeeze()
-                        
-                        # 【修正】create_semantic_uncertainty_mask が Latentサイズのマスクを返すと想定
                         latent_mask_np = create_semantic_uncertainty_mask(u_map_single, parsing_map, args.retransmission_rate)
                         
-                        # 【修正】リサイズせずに Tensor化 (1, 1, H_lat, W_lat)
                         m_tensor = torch.from_numpy(latent_mask_np).unsqueeze(0).unsqueeze(0).float()
                         mask_sem_list.append(m_tensor)
                         
-                        # セマンティックマスクの保存 (Latentサイズを拡大して保存)
                         fname_no_ext = os.path.splitext(batch_files[j])[0]
                         save_name = f"{fname_no_ext}_mask_semantic.png"
                         save_path = os.path.join(batch_out_dir, str(j), save_name)
                         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                        
-                        # 視認用に拡大 (Nearest)
                         vis_mask = F.interpolate(m_tensor, size=(256, 256), mode='nearest').squeeze().cpu().numpy()
                         mask_img_data = (vis_mask * 255).astype(np.uint8)
                         Image.fromarray(mask_img_data, mode='L').save(save_path)
@@ -499,7 +549,7 @@ def main():
                     pass2_sem_results = evaluate_and_save(
                         valid_x_rec_sem, valid_batch_input, batch_files, batch_out_dir, "pass2_semantic",
                         loss_fn_lpips, loss_fn_dists, loss_fn_id,
-                        fid_save_dir=fid_dirs["pass2_semantic"] if FID_AVAILABLE else None # 【追加】FID保存
+                        fid_save_dir=fid_dirs["pass2_semantic"] if FID_AVAILABLE else None
                     )
 
                 # === Retransmission Logic (Benchmark: Random) ===
@@ -509,7 +559,6 @@ def main():
                     mask_shape = (z0.shape[0], 1, z0.shape[2], z0.shape[3])
                     mask_rand = create_random_mask(mask_shape, args.retransmission_rate, z0.device)
                     
-                    # マスク保存
                     save_mask_tensor(mask_rand, batch_files, batch_out_dir, "mask_rand")
 
                     samples_rand, _ = sampler.sample_inpainting_awgn(
@@ -526,7 +575,7 @@ def main():
                     pass2_rand_results = evaluate_and_save(
                         valid_x_rec_rand, valid_batch_input, batch_files, batch_out_dir, "pass2_rand",
                         loss_fn_lpips, loss_fn_dists, loss_fn_id,
-                        fid_save_dir=fid_dirs["pass2_random"] if FID_AVAILABLE else None # 【追加】FID保存
+                        fid_save_dir=fid_dirs["pass2_random"] if FID_AVAILABLE else None
                     )
 
                 # === 結果統合 ===
@@ -536,8 +585,8 @@ def main():
                             "metrics": pass1_results[fname],
                             "correlation": corrs_pass1[j]
                         },
-                        "pass2_uncertainty": {
-                            "metrics": pass2_unc_results.get(fname) if pass2_unc_results else None
+                        "pass2_structural": {
+                            "metrics": pass2_struc_results.get(fname) if pass2_struc_results else None
                         },
                         "pass2_semantic": {
                             "metrics": pass2_sem_results.get(fname) if pass2_sem_results else None
@@ -559,7 +608,7 @@ def main():
         # === Summary Calculation ===
         method_labels = {
             "pass1": "Pass 1 (Initial)",
-            "pass2_uncertainty": "Pass 2 (High Uncertainty)",
+            "pass2_structural": "Pass 2 (Structural Unc)", # ラベル変更
             "pass2_semantic": "Pass 2 (Semantic/Face)",
             "pass2_random": "Pass 2 (Random)"
         }
@@ -585,12 +634,11 @@ def main():
             
             target_methods = ["pass1"]
             if args.retransmission_rate > 0.0:
-                target_methods.extend(["pass2_uncertainty", "pass2_semantic", "pass2_random"])
+                target_methods.extend(["pass2_structural", "pass2_semantic", "pass2_random"])
 
             for m_key in target_methods:
                 if m_key in fid_dirs and os.path.exists(fid_dirs[m_key]) and len(os.listdir(fid_dirs[m_key])) > 0:
                     try:
-                        # GTフォルダ vs 各メソッドフォルダ
                         fid_value = fid_score.calculate_fid_given_paths(
                             [fid_dirs["gt"], fid_dirs[m_key]],
                             batch_size=50,
@@ -625,7 +673,6 @@ def main():
                 else:
                     best_scores[met] = min(valid_avgs)
         
-        # 【追加】FIDのベスト（最小値）を計算
         valid_fids = [v for v in fids.values() if v is not None]
         best_fid = min(valid_fids) if valid_fids else None
 
@@ -656,7 +703,6 @@ def main():
                 else:
                     row_str += f" | {val_str:<10}"
             
-            # FID表示（強調表示ロジック追加）
             fid_val = fids.get(m_key)
             if fid_val is not None:
                  fid_str = f"{fid_val:.4f}"
