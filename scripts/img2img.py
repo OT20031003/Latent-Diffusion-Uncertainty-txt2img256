@@ -143,7 +143,6 @@ def save_heatmap_with_correlation(uncertainty_tensor, error_tensor, output_dir, 
 def save_mask_tensor(mask_tensor, batch_files, batch_out_dir, suffix, target_size=(256, 256)):
     """
     マスクTensor (B, C, H, W) を画像として保存するヘルパー関数
-    Latentサイズのマスクを画像サイズにリサイズして保存する
     """
     if mask_tensor is None:
         return
@@ -184,29 +183,6 @@ def create_retransmission_mask(uncertainty_map, rate):
         if k > 0:
             threshold = torch.kthvalue(flat, flat.numel() - k + 1).values
             mask[i] = (spatial_unc[i] >= threshold).float()
-            
-    return mask
-
-def create_low_uncertainty_mask(uncertainty_map, rate):
-    """
-    不確実性マップから下位 rate% (不確実性が低い領域) を特定するマスクを作成
-    比較実験用
-    """
-    if uncertainty_map is None:
-        return None
-    
-    spatial_unc = torch.mean(uncertainty_map, dim=1, keepdim=True)
-    b, c, h, w = spatial_unc.shape
-    mask = torch.zeros_like(spatial_unc)
-    
-    for i in range(b):
-        flat = spatial_unc[i].flatten()
-        k = int(flat.numel() * rate)
-        if k > 0:
-            # 下位k番目の値（小さい順）を閾値とする
-            threshold = torch.kthvalue(flat, k).values
-            # 閾値以下（不確実性が低い）をマスク対象とする
-            mask[i] = (spatial_unc[i] <= threshold).float()
             
     return mask
 
@@ -413,31 +389,6 @@ def main():
                         loss_fn_lpips, loss_fn_dists, loss_fn_id
                     )
 
-                # === Retransmission Logic (Method 2: Low Uncertainty) ===
-                pass2_low_unc_results = {}
-                if args.retransmission_rate > 0.0 and uncertainty_map is not None:
-                    print(f"  [Retransmission - Low Uncertainty] Rate={args.retransmission_rate*100}%")
-                    mask_low_unc = create_low_uncertainty_mask(uncertainty_map, args.retransmission_rate)
-                    
-                    # マスク保存
-                    save_mask_tensor(mask_low_unc, batch_files, batch_out_dir, "mask_low_unc")
-
-                    samples_low_unc, _ = sampler.sample_inpainting_awgn(
-                        S=args.ddim_steps, batch_size=args.batch_size, shape=z0.shape[1:],
-                        noisy_latent=z_received_pass1,
-                        snr_db=args.snr,
-                        mask=mask_low_unc,
-                        x0=z0,
-                        eta=0.0, verbose=True
-                    )
-                    
-                    x_rec_low_unc = model.decode_first_stage(samples_low_unc)
-                    valid_x_rec_low_unc = x_rec_low_unc[:actual_bs]
-                    pass2_low_unc_results = evaluate_and_save(
-                        valid_x_rec_low_unc, valid_batch_input, batch_files, batch_out_dir, "pass2_low_unc",
-                        loss_fn_lpips, loss_fn_dists, loss_fn_id
-                    )
-
                 # === Retransmission Logic (Method 3: Semantic/Face-aware) ===
                 pass2_sem_results = {}
                 if args.retransmission_rate > 0.0 and uncertainty_map is not None and face_parser is not None:
@@ -451,13 +402,12 @@ def main():
                         try:
                             parsing_map = face_parser.get_parsing_map(img_tensor) # -> (H_img, W_img) numpy
                             
-                            # セグメンテーションマップ保存 (視認性確保のため x10 程度で輝度を持ち上げ)
+                            # セグメンテーションマップ保存 (視認性確保のため x13 程度で輝度を持ち上げ)
                             fname_no_ext = os.path.splitext(batch_files[j])[0]
                             seg_save_name = f"{fname_no_ext}_segmap.png"
                             seg_save_path = os.path.join(batch_out_dir, str(j), seg_save_name)
                             os.makedirs(os.path.dirname(seg_save_path), exist_ok=True)
                             
-                            # ID 0-18 を 0-255 にマッピング (例: ID*13)
                             vis_seg_map = (parsing_map * 13).astype(np.uint8)
                             Image.fromarray(vis_seg_map, mode='L').save(seg_save_path)
 
@@ -540,9 +490,6 @@ def main():
                         "pass2_uncertainty": {
                             "metrics": pass2_unc_results.get(fname) if pass2_unc_results else None
                         },
-                        "pass2_low_uncertainty": {
-                            "metrics": pass2_low_unc_results.get(fname) if pass2_low_unc_results else None
-                        },
                         "pass2_semantic": {
                             "metrics": pass2_sem_results.get(fname) if pass2_sem_results else None
                         },
@@ -557,7 +504,6 @@ def main():
                 del batch_input, z0, z_received_pass1, samples_pass1, history_pass1
                 del x_rec_pass1, valid_x_rec_pass1
                 if 'samples_unc' in locals(): del samples_unc
-                if 'samples_low_unc' in locals(): del samples_low_unc
                 if 'samples_sem' in locals(): del samples_sem
                 if 'samples_rand' in locals(): del samples_rand
                 gc.collect()
@@ -567,7 +513,6 @@ def main():
         method_labels = {
             "pass1": "Pass 1 (Initial)",
             "pass2_uncertainty": "Pass 2 (High Uncertainty)",
-            "pass2_low_uncertainty": "Pass 2 (Low Uncertainty)",
             "pass2_semantic": "Pass 2 (Semantic/Face)",
             "pass2_random": "Pass 2 (Random)"
         }
