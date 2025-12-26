@@ -221,7 +221,7 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
 
 def main():
     parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation with WACV Uncertainty")
-    parser.add_argument("--input_dir", type=str, default="inpdir2")
+    parser.add_argument("--input_dir", type=str, default="input_dir")
     parser.add_argument("--output_dir", type=str, default="results/")
     parser.add_argument("--snr", type=float, default=-15.0)
     parser.add_argument("-r","--retransmission_rate", type=float, default=0.2)
