@@ -58,7 +58,7 @@ def process_images(input_dir, output_dir, target_size=(256, 256)):
 
 # --- 設定 ---
 # 実際のパスに書き換えてください
-INPUT_DIR = "inp"   # 元画像のフォルダ
+INPUT_DIR = "COCO"   # 元画像のフォルダ
 OUTPUT_DIR = "input_dir" # 保存先のフォルダ
 
 if __name__ == "__main__":

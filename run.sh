@@ -1,96 +1,52 @@
 #!/bin/bash
 
 # 出力ディレクトリの作成
-mkdir -p results_experiment_optimized
+mkdir -p results_experiment_text2img_high_snr
 
 # 共通設定
-PY_CMD="python -m scripts.img2img"
+PY_CMD="python -m scripts.img2img --config models/ldm/text2img256/config.yaml --ckpt models/ldm/text2img256/model.ckpt --output_dir results_experiment_text2img_high_snr"
 
-# ベースラインとして計測する手法
-# semantic (Weighted) と semantic_only (Benchmark) を含める
-METHODS_BASE="structural raw semantic semantic_only random edge_rec edge_gt"
+# ベースライン手法
+METHODS_BASE="structural raw random edge_rec edge_gt"
 
-# 共通パラメータ設定 (SAは0.0固定)
+# 共通パラメータ
 SA_VAL="0.0"
+RATE="0.1"  # 最後の行の指定に合わせて0.1に設定（必要なら0.2に変更してください）
 
 echo "================================================================="
-echo " STARTING OPTIMIZED RUN: SA=0.0, Focused Hybrid Ratios"
+echo " STARTING RUN (Text2Img): SNR Range -5 to 5, Rate ${RATE}"
 echo "================================================================="
 
-# -----------------------------------------------------------------
-# Group 1: Standard Setting (SNR -15dB, Rate 0.2)
-# -----------------------------------------------------------------
-echo "--- Group 1: SNR -15, Rate 0.2, StructAlpha ${SA_VAL} ---"
+# SNR -5, 0, 5 でループを実行
+# もし全ての整数(-5,-4...5)を実行したい場合は {-5..5} に変更してください
+for SNR in -5 0 5; do
 
-# [G1-Baseline] 共通ベースライン
-echo "Running G1 Baselines..."
-$PY_CMD --snr -15 -r 0.2 --struct_alpha ${SA_VAL} \
-    --target_methods $METHODS_BASE \
-    > log_g1_baseline.txt 2>&1
+    echo "-----------------------------------------------------------------"
+    echo " Processing SNR: ${SNR} dB (Rate: ${RATE})"
+    echo "-----------------------------------------------------------------"
 
-# [G1-Hybrid] Hybridのみ実行
-# 1. Balanced (0.5 / 0.5)
-echo "Running G1 Hybrid Balanced (0.5/0.5)..."
-$PY_CMD --snr -15 -r 0.2 --struct_alpha ${SA_VAL} \
-    --hybrid_alpha 0.5 --hybrid_beta 0.5 \
-    --target_methods hybrid \
-    > log_g1_h05_05.txt 2>&1
+    # 1. Baseline Methods (structural, raw, etc.)
+    echo "  > Running Baselines..."
+    $PY_CMD --snr ${SNR} -r ${RATE} --struct_alpha ${SA_VAL} \
+        --target_methods $METHODS_BASE \
+        > log_snr${SNR}_baseline.txt 2>&1
 
-# 2. Edge Bias (0.3 / 0.7) - 構造重視
-echo "Running G1 Hybrid Edge-Bias (0.3/0.7)..."
-$PY_CMD --snr -15 -r 0.2 --struct_alpha ${SA_VAL} \
-    --hybrid_alpha 0.3 --hybrid_beta 0.7 \
-    --target_methods hybrid \
-    > log_g1_h03_07.txt 2>&1
+    # 2. Hybrid Balanced (0.5 / 0.5)
+    echo "  > Running Hybrid Balanced (0.5/0.5)..."
+    $PY_CMD --snr ${SNR} -r ${RATE} --struct_alpha ${SA_VAL} \
+        --hybrid_alpha 0.5 --hybrid_beta 0.5 \
+        --target_methods hybrid \
+        > log_snr${SNR}_h05_05.txt 2>&1
 
+    # 3. Hybrid Edge-Bias (0.3 / 0.7)
+    echo "  > Running Hybrid Edge-Bias (0.3/0.7)..."
+    $PY_CMD --snr ${SNR} -r ${RATE} --struct_alpha ${SA_VAL} \
+        --hybrid_alpha 0.3 --hybrid_beta 0.7 \
+        --target_methods hybrid \
+        > log_snr${SNR}_h03_07.txt 2>&1
 
-# -----------------------------------------------------------------
-# Group 2: Low Bandwidth (SNR -15dB, Rate 0.1)
-# -----------------------------------------------------------------
-echo "--- Group 2: SNR -15, Rate 0.1 (Low Bandwidth) ---"
+done
 
-# [G2-Baseline]
-echo "Running G2 Baselines..."
-$PY_CMD --snr -15 -r 0.1 --struct_alpha ${SA_VAL} \
-    --target_methods $METHODS_BASE \
-    > log_g2_baseline.txt 2>&1
-
-# [G2-Hybrid]
-echo "Running G2 Hybrid Balanced (0.5/0.5)..."
-$PY_CMD --snr -15 -r 0.1 --struct_alpha ${SA_VAL} \
-    --hybrid_alpha 0.5 --hybrid_beta 0.5 \
-    --target_methods hybrid \
-    > log_g2_h05_05.txt 2>&1
-
-echo "Running G2 Hybrid Edge-Bias (0.3/0.7)..."
-$PY_CMD --snr -15 -r 0.1 --struct_alpha ${SA_VAL} \
-    --hybrid_alpha 0.3 --hybrid_beta 0.7 \
-    --target_methods hybrid \
-    > log_g2_h03_07.txt 2>&1
-
-
-# -----------------------------------------------------------------
-# Group 3: Heavy Noise (SNR -20dB, Rate 0.2)
-# -----------------------------------------------------------------
-echo "--- Group 3: SNR -20, Rate 0.2 (Heavy Noise) ---"
-
-# [G3-Baseline]
-echo "Running G3 Baselines..."
-$PY_CMD --snr -20 -r 0.2 --struct_alpha ${SA_VAL} \
-    --target_methods $METHODS_BASE \
-    > log_g3_baseline.txt 2>&1
-
-# [G3-Hybrid]
-echo "Running G3 Hybrid Balanced (0.5/0.5)..."
-$PY_CMD --snr -20 -r 0.2 --struct_alpha ${SA_VAL} \
-    --hybrid_alpha 0.5 --hybrid_beta 0.5 \
-    --target_methods hybrid \
-    > log_g3_h05_05.txt 2>&1
-
-echo "Running G3 Hybrid Edge-Bias (0.3/0.7)..."
-$PY_CMD --snr -20 -r 0.2 --struct_alpha ${SA_VAL} \
-    --hybrid_alpha 0.3 --hybrid_beta 0.7 \
-    --target_methods hybrid \
-    > log_g3_h03_07.txt 2>&1
-
-echo "All optimized experiments completed."
+echo "================================================================="
+echo " All experiments for SNR -5 to 5 completed."
+echo "================================================================="
