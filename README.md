@@ -44,9 +44,17 @@ python img2img.py \
 structural構造的不確実性: 時間的な不確実性マップを平滑化し、構造的な欠損を優先して再送します。
 
 rawRaw Uncertainty: 拡散モデルのサンプリング過程で得られる生の不確実性を使用します。
-smart_hybridSmart Hybrid (提案手法): 不確実性とエッジ/セマンティック情報を賢く統合した手法です。semanticSemantic Weighted: 受信側の不確実性と、セマンティック重要度（物体領域など）を掛け合わせます。edge_recEdge (Rec): 再構成画像から抽出したエッジ周辺を再送します。
+
+smart_hybridSmart Hybrid (提案手法): 不確実性とエッジ/セマンティック情報を賢く統合した手法です。
+
+semanticSemantic Weighted: 受信側の不確実性と、セマンティック重要度（物体領域など）を掛け合わせます。
+
+edge_recEdge (Rec): 再構成画像から抽出したエッジ周辺を再送します。
+
 edge_gtEdge (GT): 送信画像のエッジを使用。
+
 oracleOracle Error: 実際の誤差（Ground Truthとの差分）を知っていると仮定した理想的な再送戦略。
+
 Random: 領域をランダムに選択するベースラインです。
 
 ### 実験結果 (再送率 r = 0.1, COCO 100枚)
