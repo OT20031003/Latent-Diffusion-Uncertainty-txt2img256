@@ -1,0 +1,277 @@
+for f in log_snr*.txt; do     echo "========= $f =========";     grep -E "Method|Pass" "$f";     echo ""; done
+
+
+
+(ldm) naaa@DESKTOP-2LMVTEI:~/Latent-Diffusion-Uncertainty$ for f in log_snr*.txt; do     echo "========= $f =========";     grep -E "Method|Pass" "$f";     echo ""; done
+========= log_snr-1_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.3190    | 0.3055     | 0.2828     | 0.2672     | 0.7492     | 201.1473
+Pass 2 (Struct/Smooth)         | 21.2590    | 0.2453     | 0.2345     | *0.2217* | *0.8155* | 162.0009
+Pass 2 (Raw/Temporal)          | 21.0701    | 0.2662     | 0.2551     | 0.2336     | 0.8085     | 166.4776
+Pass 2 (Random)                | 20.9295    | 0.2590     | 0.2519     | 0.2268     | 0.7838     | 178.8082
+Pass 2 (Edge/Rec)              | *21.5102* | 0.2534     | 0.2425     | 0.2370     | 0.8018     | 167.6570
+Pass 2 (Edge/GT-Oracle)        | 21.3525    | *0.2352* | *0.2299* | 0.2222     | 0.8076     | *158.3413*
+
+========= log_snr-1_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.3190    | 0.3055     | 0.2828     | 0.2672     | 0.7492     | 201.1473
+Pass 2 (Hybrid U+E)            | *21.3921* | *0.2359* | *0.2297* | *0.2212* | *0.8104* | *157.6059*
+
+========= log_snr-1_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.3190    | 0.3055     | 0.2828     | 0.2672     | 0.7492     | 201.1473
+Pass 2 (Hybrid U+E)            | *21.3894* | *0.2368* | *0.2300* | *0.2248* | *0.8153* | *155.6010*
+
+========= log_snr-1_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.3190    | 0.3055     | 0.2828     | 0.2672     | 0.7492     | 201.1473
+Pass 2 (Smart Hybrid AND)      | 21.5251    | 0.2366     | 0.2247     | 0.2116     | 0.8170     | 150.8145
+Pass 2 (Oracle Error)          | *22.3823* | *0.1681* | *0.1781* | *0.1415* | *0.8670* | *115.7613*
+
+========= log_snr-2_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 19.6474    | 0.3663     | 0.3210     | 0.3213     | 0.7011     | 225.6927
+Pass 2 (Struct/Smooth)         | 20.6625    | 0.2908     | 0.2606     | *0.2514* | *0.7870* | 182.0925
+Pass 2 (Raw/Temporal)          | 20.4244    | 0.3180     | 0.2876     | 0.2759     | 0.7736     | 188.6667
+Pass 2 (Random)                | 20.3189    | 0.3078     | 0.2837     | 0.2654     | 0.7429     | 203.6263
+Pass 2 (Edge/Rec)              | *20.8928* | 0.2989     | 0.2712     | 0.2831     | 0.7693     | 190.3506
+Pass 2 (Edge/GT-Oracle)        | 20.7356    | *0.2743* | *0.2553* | 0.2584     | 0.7774     | *180.5447*
+
+========= log_snr-2_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 19.6474    | 0.3663     | 0.3210     | 0.3213     | 0.7011     | 225.6927
+Pass 2 (Hybrid U+E)            | *20.7670* | *0.2761* | *0.2545* | *0.2576* | *0.7847* | *179.4201*
+
+========= log_snr-2_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 19.6474    | 0.3663     | 0.3210     | 0.3213     | 0.7011     | 225.6927
+Pass 2 (Hybrid U+E)            | *20.7800* | *0.2785* | *0.2553* | *0.2583* | *0.7900* | *177.4706*
+
+========= log_snr-2_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 19.6474    | 0.3663     | 0.3210     | 0.3213     | 0.7011     | 225.6927
+Pass 2 (Smart Hybrid AND)      | 20.9421    | 0.2780     | 0.2485     | 0.2459     | 0.7915     | 170.9225
+Pass 2 (Oracle Error)          | *21.9518* | *0.1905* | *0.1942* | *0.1642* | *0.8460* | *133.2444*
+
+========= log_snr-3_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.9359    | 0.4371     | 0.3626     | 0.3778     | 0.6557     | 252.7675
+Pass 2 (Struct/Smooth)         | 20.0169    | 0.3439     | 0.2908     | 0.2956     | *0.7505* | *202.5807*
+Pass 2 (Raw/Temporal)          | 19.6944    | 0.3802     | 0.3232     | 0.3096     | 0.7261     | 214.2162
+Pass 2 (Random)                | 19.6665    | 0.3639     | 0.3175     | 0.3121     | 0.6990     | 229.0576
+Pass 2 (Edge/Rec)              | *20.2498* | 0.3498     | 0.3001     | 0.3206     | 0.7351     | 214.4399
+Pass 2 (Edge/GT-Oracle)        | 20.0479    | *0.3197* | *0.2808* | *0.2952* | 0.7431     | 204.7352
+
+========= log_snr-3_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.9359    | 0.4371     | 0.3626     | 0.3778     | 0.6557     | 252.7675
+Pass 2 (Hybrid U+E)            | *20.0821* | *0.3227* | *0.2805* | *0.2981* | *0.7482* | *205.7504*
+
+========= log_snr-3_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.9359    | 0.4371     | 0.3626     | 0.3778     | 0.6557     | 252.7675
+Pass 2 (Hybrid U+E)            | *20.0912* | *0.3276* | *0.2829* | *0.2960* | *0.7531* | *199.7215*
+
+========= log_snr-3_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.9359    | 0.4371     | 0.3626     | 0.3778     | 0.6557     | 252.7675
+Pass 2 (Smart Hybrid AND)      | 20.3063    | 0.3244     | 0.2746     | 0.2822     | 0.7622     | 191.9249
+Pass 2 (Oracle Error)          | *21.4879* | *0.2173* | *0.2131* | *0.1858* | *0.8222* | *151.8447*
+
+========= log_snr-4_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.2324    | 0.5162     | 0.4095     | 0.4191     | 0.6181     | 281.3541
+Pass 2 (Struct/Smooth)         | 19.3491    | 0.4048     | 0.3242     | 0.3406     | 0.7111     | *224.0476*
+Pass 2 (Raw/Temporal)          | 18.9941    | 0.4528     | 0.3618     | 0.3538     | 0.6846     | 245.3893
+Pass 2 (Random)                | 19.0222    | 0.4285     | 0.3562     | 0.3605     | 0.6591     | 255.2028
+Pass 2 (Edge/Rec)              | *19.5881* | 0.4075     | 0.3332     | 0.3552     | 0.6946     | 236.3458
+Pass 2 (Edge/GT-Oracle)        | 19.3816    | *0.3660* | *0.3069* | *0.3373* | *0.7131* | 225.7494
+
+========= log_snr-4_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.2324    | 0.5162     | 0.4095     | 0.4191     | 0.6181     | 281.3541
+Pass 2 (Hybrid U+E)            | *19.3979* | *0.3715* | *0.3085* | *0.3383* | *0.7213* | *222.8205*
+
+========= log_snr-4_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.2324    | 0.5162     | 0.4095     | 0.4191     | 0.6181     | 281.3541
+Pass 2 (Hybrid U+E)            | *19.4157* | *0.3788* | *0.3121* | *0.3439* | *0.7206* | *224.4834*
+
+========= log_snr-4_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 18.2324    | 0.5162     | 0.4095     | 0.4191     | 0.6181     | 281.3541
+Pass 2 (Smart Hybrid AND)      | 19.6784    | 0.3759     | 0.3015     | 0.3218     | 0.7296     | 214.4511
+Pass 2 (Oracle Error)          | *21.0381* | *0.2464* | *0.2313* | *0.2121* | *0.7976* | *170.6134*
+
+========= log_snr-5_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 17.5380    | 0.5912     | 0.4548     | 0.4681     | 0.5867     | 295.3020
+Pass 2 (Struct/Smooth)         | 18.6672    | 0.4707     | 0.3595     | 0.3869     | 0.6717     | 246.0163
+Pass 2 (Raw/Temporal)          | 18.2662    | 0.5291     | 0.4035     | 0.3919     | 0.6488     | 264.1122
+Pass 2 (Random)                | 18.3939    | 0.4944     | 0.3933     | 0.4053     | 0.6225     | 275.7278
+Pass 2 (Edge/Rec)              | *18.8736* | 0.4694     | 0.3683     | 0.4012     | 0.6617     | 249.9981
+Pass 2 (Edge/GT-Oracle)        | 18.6788    | *0.4151* | *0.3335* | *0.3753* | *0.6891* | *240.1561*
+
+========= log_snr-5_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 17.5380    | 0.5912     | 0.4548     | 0.4681     | 0.5867     | 295.3020
+Pass 2 (Hybrid U+E)            | *18.7019* | *0.4211* | *0.3365* | *0.3789* | *0.6941* | *239.8978*
+
+========= log_snr-5_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 17.5380    | 0.5912     | 0.4548     | 0.4681     | 0.5867     | 295.3020
+Pass 2 (Hybrid U+E)            | *18.7212* | *0.4315* | *0.3414* | *0.3812* | *0.6932* | *240.3291*
+
+========= log_snr-5_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 17.5380    | 0.5912     | 0.4548     | 0.4681     | 0.5867     | 295.3020
+Pass 2 (Smart Hybrid AND)      | 19.0144    | 0.4277     | 0.3299     | 0.3632     | 0.6985     | 229.1610
+Pass 2 (Oracle Error)          | *20.5931* | *0.2783* | *0.2501* | *0.2341* | *0.7710* | *187.0852*
+
+========= log_snr0_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.9574    | 0.2553     | 0.2487     | 0.2284     | 0.7909     | 171.7755
+Pass 2 (Struct/Smooth)         | 21.8018    | 0.2074     | 0.2098     | 0.1919     | *0.8406* | 136.8157
+Pass 2 (Raw/Temporal)          | 21.6390    | 0.2241     | 0.2268     | 0.2053     | 0.8363     | 140.9263
+Pass 2 (Random)                | 21.4995    | 0.2184     | 0.2225     | 0.1957     | 0.8163     | 149.8811
+Pass 2 (Edge/Rec)              | *22.0851* | 0.2138     | 0.2158     | 0.2054     | 0.8300     | 143.5153
+Pass 2 (Edge/GT-Oracle)        | 21.9300    | *0.2009* | *0.2058* | *0.1881* | 0.8325     | *136.6026*
+
+========= log_snr0_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.9574    | 0.2553     | 0.2487     | 0.2284     | 0.7909     | 171.7755
+Pass 2 (Hybrid U+E)            | *21.9578* | *0.2007* | *0.2062* | *0.1904* | *0.8367* | *133.7229*
+
+========= log_snr0_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.9574    | 0.2553     | 0.2487     | 0.2284     | 0.7909     | 171.7755
+Pass 2 (Hybrid U+E)            | *21.9478* | *0.2010* | *0.2057* | *0.1920* | *0.8386* | *133.6575*
+
+========= log_snr0_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 20.9574    | 0.2553     | 0.2487     | 0.2284     | 0.7909     | 171.7755
+Pass 2 (Smart Hybrid AND)      | 22.0665    | 0.2015     | 0.2020     | 0.1813     | 0.8403     | 130.1088
+Pass 2 (Oracle Error)          | *22.8116* | *0.1486* | *0.1621* | *0.1240* | *0.8860* | *99.5335*
+
+========= log_snr1_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 21.5861    | 0.2133     | 0.2180     | 0.1918     | 0.8259     | 141.9837
+Pass 2 (Struct/Smooth)         | 22.3302    | 0.1761     | 0.1875     | 0.1617     | *0.8643* | 115.4766
+Pass 2 (Raw/Temporal)          | 22.2178    | 0.1898     | 0.1996     | 0.1725     | 0.8616     | 115.2787
+Pass 2 (Random)                | 22.0820    | 0.1843     | 0.1959     | 0.1658     | 0.8498     | 124.8090
+Pass 2 (Edge/Rec)              | *22.6512* | 0.1794     | 0.1909     | 0.1678     | 0.8555     | 120.6616
+Pass 2 (Edge/GT-Oracle)        | 22.5180    | *0.1706* | *0.1833* | *0.1551* | 0.8579     | *114.9435*
+
+========= log_snr1_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 21.5861    | 0.2133     | 0.2180     | 0.1918     | 0.8259     | 141.9837
+Pass 2 (Hybrid U+E)            | *22.5322* | *0.1699* | *0.1837* | *0.1574* | *0.8607* | *113.0834*
+
+========= log_snr1_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 21.5861    | 0.2133     | 0.2180     | 0.1918     | 0.8259     | 141.9837
+Pass 2 (Hybrid U+E)            | *22.5218* | *0.1699* | *0.1837* | *0.1604* | *0.8623* | *112.7568*
+
+========= log_snr1_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 21.5861    | 0.2133     | 0.2180     | 0.1918     | 0.8259     | 141.9837
+Pass 2 (Smart Hybrid AND)      | 22.6161    | 0.1717     | 0.1802     | 0.1548     | 0.8653     | 109.7229
+Pass 2 (Oracle Error)          | *23.2568* | *0.1313* | *0.1467* | *0.1055* | *0.9041* | *85.7586*
+
+========= log_snr2_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.1816    | 0.1794     | 0.1914     | 0.1570     | 0.8536     | 117.3582
+Pass 2 (Struct/Smooth)         | 22.8400    | 0.1508     | 0.1665     | 0.1336     | 0.8871     | 97.7864
+Pass 2 (Raw/Temporal)          | 22.7646    | 0.1619     | 0.1760     | 0.1472     | *0.8874* | *95.5145*
+Pass 2 (Random)                | 22.6289    | 0.1572     | 0.1732     | 0.1357     | 0.8775     | 104.1648
+Pass 2 (Edge/Rec)              | *23.1822* | 0.1520     | 0.1696     | 0.1367     | 0.8806     | 100.2396
+Pass 2 (Edge/GT-Oracle)        | 23.0600    | *0.1459* | *0.1629* | *0.1280* | 0.8831     | 95.8648
+
+========= log_snr2_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.1816    | 0.1794     | 0.1914     | 0.1570     | 0.8536     | 117.3582
+Pass 2 (Hybrid U+E)            | *23.0648* | *0.1451* | *0.1635* | *0.1280* | *0.8841* | *94.9879*
+
+========= log_snr2_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.1816    | 0.1794     | 0.1914     | 0.1570     | 0.8536     | 117.3582
+Pass 2 (Hybrid U+E)            | *23.0469* | *0.1453* | *0.1636* | *0.1301* | *0.8851* | *95.1027*
+
+========= log_snr2_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.1816    | 0.1794     | 0.1914     | 0.1570     | 0.8536     | 117.3582
+Pass 2 (Smart Hybrid AND)      | 23.1326    | 0.1468     | 0.1608     | 0.1286     | 0.8890     | 92.5928
+Pass 2 (Oracle Error)          | *23.6801* | *0.1162* | *0.1327* | *0.0906* | *0.9164* | *73.0774*
+
+========= log_snr3_baseline.txt =========
+Target Methods: ['pass2_edge_gt', 'pass2_edge_rec', 'pass2_random', 'pass2_raw', 'pass2_structural']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.7321    | 0.1525     | 0.1688     | 0.1323     | 0.8821     | 97.8839
+Pass 2 (Struct/Smooth)         | 23.3011    | 0.1307     | 0.1489     | 0.1129     | 0.9066     | 83.1266
+Pass 2 (Raw/Temporal)          | 23.2696    | 0.1390     | 0.1558     | 0.1180     | *0.9067* | 80.7237
+Pass 2 (Random)                | 23.1355    | 0.1358     | 0.1533     | 0.1165     | 0.9006     | 86.5989
+Pass 2 (Edge/Rec)              | *23.6751* | 0.1304     | 0.1504     | 0.1143     | 0.9024     | 82.9430
+Pass 2 (Edge/GT-Oracle)        | 23.5598    | *0.1262* | *0.1459* | *0.1067* | 0.9022     | *80.6702*
+
+========= log_snr3_h03_07.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.7321    | 0.1525     | 0.1688     | 0.1323     | 0.8821     | 97.8839
+Pass 2 (Hybrid U+E)            | *23.5590* | *0.1256* | *0.1456* | *0.1081* | *0.9033* | *79.9578*
+
+========= log_snr3_h05_05.txt =========
+Target Methods: ['pass2_hybrid']
+Method                         | PSNR       | LPIPS      | DISTS      | ID Loss    | CLIP       | FID
+Pass 1 (Initial)               | 22.7321    | 0.1525     | 0.1688     | 0.1323     | 0.8821     | 97.8839
+Pass 2 (Hybrid U+E)            | *23.5353* | *0.1257* | *0.1459* | *0.1110* | *0.9058* | *80.8445*
+
+========= log_snr3_proposed.txt =========
+Target Methods: ['pass2_oracle', 'pass2_smart_hybrid']
+
+========= log_snr4_baseline.txt =========
+
+========= log_snr4_h03_07.txt =========
+
+========= log_snr4_h05_05.txt =========
+
+========= log_snr4_proposed.txt =========
+
+========= log_snr5_baseline.txt =========
+
+========= log_snr5_h03_07.txt =========
+
+========= log_snr5_h05_05.txt =========
+
+========= log_snr5_proposed.txt =========

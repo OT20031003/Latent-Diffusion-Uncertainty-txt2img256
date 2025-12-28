@@ -55,6 +55,14 @@ except ImportError:
     FID_AVAILABLE = False
     print("Warning: 'pytorch-fid' not found. FID calculation will be skipped.")
 
+# --- CLIP Import (追加) ---
+try:
+    from transformers import CLIPProcessor, CLIPModel
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+    print("Warning: 'transformers' not found. CLIP Score will be skipped.")
+
 
 def set_seed(seed):
     """再現性のためのシード値設定"""
@@ -102,8 +110,34 @@ def calculate_id_loss(img1, img2, net):
     cosine_sim = F.cosine_similarity(emb1, emb2)
     return (1.0 - cosine_sim).item()
 
+def calculate_clip_similarity(img1, img2, model, processor):
+    """
+    CLIP Image-to-Image Similarity 計算
+    img1, img2: Tensor [1, C, H, W] range [0, 1]
+    return: float cosine similarity
+    """
+    # Tensor -> PIL Image への変換
+    # img1, img2 は [1, 3, H, W] を想定
+    i1 = (img1.squeeze(0).cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    i2 = (img2.squeeze(0).cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    
+    image1_pil = Image.fromarray(i1)
+    image2_pil = Image.fromarray(i2)
+
+    inputs = processor(images=[image1_pil, image2_pil], return_tensors="pt", padding=True).to(model.device)
+    
+    with torch.no_grad():
+        outputs = model.get_image_features(**inputs)
+    
+    # 特徴ベクトルの正規化
+    outputs = outputs / outputs.norm(p=2, dim=-1, keepdim=True)
+    
+    # コサイン類似度 (GT vs Rec)
+    similarity = (outputs[0] @ outputs[1].T).item()
+    return similarity
+
 def compute_structural_uncertainty(uncertainty_map, latents_pass1=None, alpha=0.3):
-    """構造的不確実性の計算"""
+    """構造的不確実性の計算 (Baseline)"""
     if uncertainty_map is None: return None
     kernel_size = 5
     sigma = 2.0
@@ -162,6 +196,7 @@ def create_retransmission_mask(uncertainty_map, rate):
     return mask
 
 def create_hybrid_mask(uncertainty_map, edge_map, rate, alpha=0.7, beta=0.3):
+    """既存のHybrid手法 (Weighted Sum)"""
     if uncertainty_map is None or edge_map is None: return None
     spatial_unc = torch.mean(uncertainty_map, dim=1, keepdim=True)
     
@@ -183,6 +218,65 @@ def create_hybrid_mask(uncertainty_map, edge_map, rate, alpha=0.7, beta=0.3):
         if k > 0:
             threshold = torch.kthvalue(flat, flat.numel() - k + 1).values
             mask[i] = (combined_score[i] >= threshold).float()
+    return mask
+
+def create_smart_hybrid_mask(uncertainty_mask_binary, edge_map, rate, kernel_size=3):
+    """
+    【Smart Hybrid: 提案手法】
+    Uncertainty Mask (Receiver Feedback, 0/1) と Edge (Sender GT, float) の積（AND条件）を取り、
+    さらに MaxPool (Dilation相当) で領域のまとまりを作りつつ、
+    再送率を厳守してマスクを生成する。
+    """
+    if uncertainty_mask_binary is None or edge_map is None: return None
+    
+    # 1. Edge Normalization (0.0 - 1.0)
+    def normalize(x):
+        b_sz = x.shape[0]
+        min_v = x.view(b_sz, -1).min(dim=1, keepdim=True)[0].view(b_sz, 1, 1, 1)
+        max_v = x.view(b_sz, -1).max(dim=1, keepdim=True)[0].view(b_sz, 1, 1, 1)
+        return (x - min_v) / (max_v - min_v + 1e-8)
+
+    norm_edge = normalize(edge_map)
+    
+    # 2. Logic AND (積) : 「受信側が指定した不確実領域」かつ「送信側が知るエッジ」を抽出
+    # uncertainty_mask_binary は既に 0 or 1
+    score = uncertainty_mask_binary * norm_edge
+    
+    # 3. Grayscale Dilation (Max Pooling)
+    # エッジ周辺のコンテキストを含めるため膨張させる
+    padding = kernel_size // 2
+    dilated_score = F.max_pool2d(score, kernel_size=kernel_size, stride=1, padding=padding)
+    
+    # 4. Strict Thresholding (再送率厳守)
+    # 膨張させたスコアマップの上位 rate 分を取得する
+    b, c, h, w = dilated_score.shape
+    mask = torch.zeros_like(dilated_score)
+    for i in range(b):
+        flat = dilated_score[i].flatten()
+        k = int(flat.numel() * rate)
+        if k > 0:
+            # Top-k の閾値を決定
+            threshold = torch.kthvalue(flat, flat.numel() - k + 1).values
+            mask[i] = (dilated_score[i] >= threshold).float()
+            
+    return mask
+
+def create_oracle_error_mask(latent_rec, latent_gt, rate):
+    """
+    【Oracle】潜在変数空間での実際の誤差(L1)に基づきマスクを生成
+    理論上の上限性能を確認するために使用
+    """
+    diff = torch.abs(latent_rec - latent_gt)
+    error_map = torch.mean(diff, dim=1, keepdim=True)
+    
+    b, c, h, w = error_map.shape
+    mask = torch.zeros_like(error_map)
+    for i in range(b):
+        flat = error_map[i].flatten()
+        k = int(flat.numel() * rate)
+        if k > 0:
+            threshold = torch.kthvalue(flat, flat.numel() - k + 1).values
+            mask[i] = (error_map[i] >= threshold).float()
     return mask
 
 def create_semantic_weighted_mask(binary_mask, parsing_map, retransmission_rate):
@@ -259,10 +353,18 @@ def save_mask_tensor(mask, batch_files, batch_out_dir, prefix):
         img.save(save_path)
 
 def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix, 
-                      loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_save_dir=None):
+                      loss_fn_lpips, loss_fn_dists, loss_fn_id, 
+                      clip_scorer=None,  # <--- 追加
+                      fid_save_dir=None):
     gt_01 = torch.clamp((batch_input + 1.0) / 2.0, 0.0, 1.0)
     rec_01 = torch.clamp((x_rec + 1.0) / 2.0, 0.0, 1.0)
     results = {}
+    
+    # --- CLIP スコアラーの展開 ---
+    model_clip, processor_clip = None, None
+    if clip_scorer:
+        model_clip, processor_clip = clip_scorer
+
     for j, fname in enumerate(batch_files):
         img_data = (rec_01[j].cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
         img = Image.fromarray(img_data)
@@ -270,18 +372,25 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         img.save(save_path)
         if fid_save_dir: img.save(os.path.join(fid_save_dir, fname))
+        
         metrics = {"psnr": calculate_psnr(gt_01[j:j+1], rec_01[j:j+1]).item()}
         if loss_fn_lpips: metrics["lpips"] = loss_fn_lpips(gt_01[j:j+1]*2-1, rec_01[j:j+1]*2-1).item()
         if loss_fn_dists: metrics["dists"] = loss_fn_dists(gt_01[j:j+1], rec_01[j:j+1]).item()
         if loss_fn_id: metrics["id_loss"] = calculate_id_loss(gt_01[j:j+1], rec_01[j:j+1], loss_fn_id)
+        
+        # --- 追加: CLIP計算 ---
+        if model_clip and processor_clip:
+            metrics["clip"] = calculate_clip_similarity(gt_01[j:j+1], rec_01[j:j+1], model_clip, processor_clip)
+
         results[fname] = metrics
     return results
 
 def main():
+    global CLIP_AVAILABLE
     parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation (Text2Img)")
     parser.add_argument("--input_dir", type=str, default="input_dir")
     parser.add_argument("--output_dir", type=str, default="results_text2img/")
-    parser.add_argument("--snr", type=float, default=-15.0)
+    parser.add_argument("--snr", type=float, default=-3.0)
     parser.add_argument("-r","--retransmission_rate", type=float, default=0.2)
     # Default Config & Checkpoint for Text2Img
     parser.add_argument("--config", type=str, default="models/ldm/text2img256/config.yaml")
@@ -295,18 +404,16 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     
     # Text2Img用: scale (Unconditional Guidance Scale)
-    # プロンプトが空の場合、条件付きと条件なしが等しくなるため、理論上scaleは影響しませんが
-    # コードの整合性のために残します。
     parser.add_argument("--scale", type=float, default=5.0)
 
-    available_methods = ["structural", "raw", "wacv", "semantic", "semantic_only", "random", "edge_rec", "edge_gt", "hybrid"]
+    available_methods = ["structural", "raw", "wacv", "semantic", "semantic_only", "random", 
+                         "edge_rec", "edge_gt", "hybrid", "smart_hybrid", "oracle"]
     parser.add_argument("--target_methods", nargs='+', default=["all"], 
                         help=f"Select methods to run. Options: {', '.join(available_methods)} or 'all'.")
     
     args = parser.parse_args()
 
     # --- 通信シミュレーション用の強制設定 ---
-    # 受信側は画像の内容（プロンプト）を知らないため、常に空文字列（無条件）として処理する
     print("\n[Simulation Mode] Prompt forced to empty string ('') for unconditional conditioning.")
     forced_prompt = "" 
     # -------------------------------------
@@ -320,7 +427,9 @@ def main():
         "random": "pass2_random",
         "edge_rec": "pass2_edge_rec",
         "edge_gt": "pass2_edge_gt",
-        "hybrid": "pass2_hybrid"
+        "hybrid": "pass2_hybrid",
+        "smart_hybrid": "pass2_smart_hybrid",
+        "oracle": "pass2_oracle"
     }
 
     if "all" in args.target_methods:
@@ -341,7 +450,6 @@ def main():
     model = load_model_from_config(config, args.ckpt)
     sampler = DDIMSampler(model)
 
-    # FaceParserロード処理（Text2Imgでは顔以外も含むため、エラーで止まらないように注意）
     use_semantic = ("pass2_semantic" in target_keys) or ("pass2_semantic_only" in target_keys)
     face_parser = None
     if use_semantic:
@@ -357,6 +465,26 @@ def main():
     loss_fn_dists = DISTS().cuda().eval() if DISTS_AVAILABLE else None
     loss_fn_id = InceptionResnetV1(pretrained='vggface2').cuda().eval() if IDLOSS_AVAILABLE else None
 
+    # --- CLIP モデルロード (追加) ---
+    clip_scorer = None
+    if CLIP_AVAILABLE:
+        print("Loading CLIP Model (openai/clip-vit-base-patch32)...")
+        try:
+            # ViT-B/32 は標準的で軽量
+            
+            # 【重要】ここを Dドライブの絶対パス に書き換えてください
+            local_clip_path = "/mnt/d/ai_models/clip-vit-base-patch32"
+            
+            print(f"Loading CLIP from: {local_clip_path}") # デバッグ用にパスを表示
+            
+            clip_model = CLIPModel.from_pretrained(local_clip_path).cuda().eval()
+            clip_processor = CLIPProcessor.from_pretrained(local_clip_path)
+            clip_scorer = (clip_model, clip_processor)
+        except Exception as e:
+            print(f"Failed to load CLIP model: {e}")
+            CLIP_AVAILABLE = False
+
+
     image_files = sorted([f for f in os.listdir(args.input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
     experiment_dir = os.path.join(args.output_dir, f"snr{args.snr}dB_rate{args.retransmission_rate}_alpha{args.struct_alpha}")
     os.makedirs(experiment_dir, exist_ok=True)
@@ -367,7 +495,13 @@ def main():
     if FID_AVAILABLE: [os.makedirs(d, exist_ok=True) for d in fid_dirs.values()]
     
     all_results = {}
-    json_path = os.path.join(experiment_dir, f"metrics.json")
+    
+    # -------------------------------------------------------------
+    # 【修正 1】ファイル名にパラメータを含める
+    # -------------------------------------------------------------
+    json_filename = f"metrics_snr{args.snr}_rate{args.retransmission_rate}_alpha{args.struct_alpha}.json"
+    json_path = os.path.join(experiment_dir, json_filename)
+    
     calc_wacv = "pass2_wacv" in target_keys
 
     try:
@@ -389,16 +523,15 @@ def main():
                 if actual_bs < args.batch_size: batch_tensors.extend([batch_tensors[-1]] * (args.batch_size - actual_bs))
                 batch_input = torch.stack(batch_tensors).cuda()
 
-                # Text2Img用 Conditioning 生成 (常に空文字列)
+                # Text2Img用 Conditioning (空文字列)
                 c = None
                 uc = None
                 if hasattr(model, "get_learned_conditioning"):
                     prompts = [forced_prompt] * args.batch_size
                     c = model.get_learned_conditioning(prompts)
-                    # Unconditional Conditioningも同じ空文字列
                     uc = model.get_learned_conditioning([""] * args.batch_size)
 
-                # GT & First Stage
+                # GT 保存
                 valid_batch_input = batch_input[:actual_bs]
                 for j, fname in enumerate(batch_files):
                     gt_img = (torch.clamp((valid_batch_input[j] + 1.0) / 2.0, 0.0, 1.0).cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
@@ -420,7 +553,7 @@ def main():
                     snr_db=args.snr, 
                     eta=0.0,
                     calc_wacv_uncertainty=calc_wacv,
-                    conditioning=c,  # 強制的に空文字列
+                    conditioning=c,
                     unconditional_guidance_scale=args.scale,
                     unconditional_conditioning=uc
                 )
@@ -435,11 +568,18 @@ def main():
                 uncertainty_map_for_sem = temporal_uncertainty_map
 
                 x_rec_pass1 = model.decode_first_stage(samples_pass1)
-                pass1_results = evaluate_and_save(x_rec_pass1[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass1", loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_dirs["pass1"] if FID_AVAILABLE else None)
+                
+                # --- Pass 1 Evaluation with CLIP ---
+                pass1_results = evaluate_and_save(
+                    x_rec_pass1[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass1", 
+                    loss_fn_lpips, loss_fn_dists, loss_fn_id, 
+                    clip_scorer, # <--- 渡す
+                    fid_dirs["pass1"] if FID_AVAILABLE else None
+                )
 
                 # === エッジマップ計算 ===
                 need_edge = any(k in target_keys for k in ["pass2_edge_rec", "pass2_hybrid"])
-                need_edge_gt = any(k in target_keys for k in ["pass2_edge_gt", "pass2_hybrid"])
+                need_edge_gt = any(k in target_keys for k in ["pass2_edge_gt", "pass2_hybrid", "pass2_smart_hybrid"])
                 
                 edge_map_rec = None
                 if need_edge:
@@ -450,10 +590,17 @@ def main():
                     edge_map_gt = compute_edge_map(batch_input, (z0.shape[2], z0.shape[3]))
 
                 # === Structural Uncertainty Map ===
-                need_struct = any(k in target_keys for k in ["pass2_structural", "pass2_hybrid"])
+                need_struct = any(k in target_keys for k in ["pass2_structural", "pass2_hybrid", "pass2_smart_hybrid"])
                 map_struct = None
                 if need_struct:
                     map_struct = compute_structural_uncertainty(temporal_uncertainty_map, samples_pass1, alpha=args.struct_alpha)
+
+                # === [Setup for Smart Hybrid] ===
+                smart_hybrid_feedback_mask = None
+                if "pass2_smart_hybrid" in target_keys and map_struct is not None:
+                    candidate_rate = min(1.0, args.retransmission_rate * 3.0)
+                    smart_hybrid_feedback_mask = create_retransmission_mask(map_struct, candidate_rate)
+
 
                 method_candidates = [
                     ("pass2_structural", lambda: create_retransmission_mask(map_struct, args.retransmission_rate)),
@@ -461,7 +608,9 @@ def main():
                     ("pass2_wacv", lambda: create_retransmission_mask(wacv_uncertainty_map, args.retransmission_rate)),
                     ("pass2_edge_rec", lambda: create_retransmission_mask(edge_map_rec, args.retransmission_rate)),
                     ("pass2_edge_gt", lambda: create_retransmission_mask(edge_map_gt, args.retransmission_rate)),
-                    ("pass2_hybrid", lambda: create_hybrid_mask(map_struct, edge_map_gt, args.retransmission_rate, args.hybrid_alpha, args.hybrid_beta))
+                    ("pass2_hybrid", lambda: create_hybrid_mask(map_struct, edge_map_gt, args.retransmission_rate, args.hybrid_alpha, args.hybrid_beta)),
+                    ("pass2_smart_hybrid", lambda: create_smart_hybrid_mask(smart_hybrid_feedback_mask, edge_map_gt, args.retransmission_rate)),
+                    ("pass2_oracle", lambda: create_oracle_error_mask(samples_pass1, z0, args.retransmission_rate))
                 ]
                 
                 active_methods = [m for m in method_candidates if m[0] in target_keys]
@@ -474,26 +623,27 @@ def main():
                         mask = mask_gen()
                         if mask is None: continue
                         
-                        # === ファイル名調整 (Hybridの場合パラメータ付与) ===
                         file_suffix = key
                         mask_prefix = f"mask_{key.replace('pass2_', '')}"
-
                         if key == "pass2_hybrid":
                             param_str = f"_a{args.hybrid_alpha}_b{args.hybrid_beta}"
                             file_suffix += param_str
                             mask_prefix += param_str
-                        # ========================================================
                         
                         save_mask_tensor(mask, batch_files, batch_out_dir, mask_prefix)
                         
                         s, _ = sampler.sample_inpainting_awgn(
                             S=args.ddim_steps, batch_size=args.batch_size, shape=z0.shape[1:], 
                             noisy_latent=z_received_pass1, snr_db=args.snr, mask=mask, x0=z0, eta=0.0,
-                            conditioning=c, # 空文字列
-                            unconditional_guidance_scale=args.scale,
-                            unconditional_conditioning=uc
+                            conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
                         )
-                        results_batch[key] = evaluate_and_save(model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, file_suffix, loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_dirs[key] if FID_AVAILABLE else None)
+                        # --- Pass 2 Evaluation with CLIP ---
+                        results_batch[key] = evaluate_and_save(
+                            model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, file_suffix, 
+                            loss_fn_lpips, loss_fn_dists, loss_fn_id, 
+                            clip_scorer, # <--- 渡す
+                            fid_dirs[key] if FID_AVAILABLE else None
+                        )
 
                 # =================================================================
                 # Semantic Weighted Method
@@ -505,19 +655,13 @@ def main():
                         candidate_rate = min(1.0, args.retransmission_rate * 3.0)
                         u_map = uncertainty_map_for_sem[j:j+1]
                         mask_rec = create_retransmission_mask(u_map, candidate_rate) 
-                        
                         p = face_parser.get_parsing_map(valid_batch_input[j:j+1])
-                        m_np = create_semantic_weighted_mask(
-                            mask_rec.cpu().numpy().squeeze(), 
-                            p, 
-                            args.retransmission_rate 
-                        )
+                        m_np = create_semantic_weighted_mask(mask_rec.cpu().numpy().squeeze(), p, args.retransmission_rate)
                         m = torch.from_numpy(m_np).unsqueeze(0).unsqueeze(0).float()
                         mask_sem_list.append(m)
                     
                     mask_sem = torch.cat(mask_sem_list, dim=0)
                     save_mask_tensor(mask_sem, batch_files, batch_out_dir, "mask_semantic_weighted")
-                    
                     if mask_sem.shape[0] < args.batch_size:
                         mask_sem = torch.cat([mask_sem, mask_sem[-1:].repeat(args.batch_size-actual_bs, 1, 1, 1)], dim=0)
                     mask_sem = mask_sem.cuda()
@@ -527,7 +671,12 @@ def main():
                         noisy_latent=z_received_pass1, snr_db=args.snr, mask=mask_sem, x0=z0, eta=0.0,
                         conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
                     )
-                    results_batch["pass2_semantic"] = evaluate_and_save(model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_semantic", loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_dirs["pass2_semantic"] if FID_AVAILABLE else None)
+                    results_batch["pass2_semantic"] = evaluate_and_save(
+                        model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_semantic", 
+                        loss_fn_lpips, loss_fn_dists, loss_fn_id, 
+                        clip_scorer, 
+                        fid_dirs["pass2_semantic"] if FID_AVAILABLE else None
+                    )
 
                 # =================================================================
                 # Semantic ONLY Method
@@ -537,17 +686,12 @@ def main():
                     mask_sem_list = []
                     for j in range(actual_bs):
                         p = face_parser.get_parsing_map(valid_batch_input[j:j+1])
-                        m_np = create_semantic_only_mask(
-                            (z0.shape[2], z0.shape[3]), # (H, W)
-                            p, 
-                            args.retransmission_rate
-                        )
+                        m_np = create_semantic_only_mask((z0.shape[2], z0.shape[3]), p, args.retransmission_rate)
                         m = torch.from_numpy(m_np).unsqueeze(0).unsqueeze(0).float()
                         mask_sem_list.append(m)
                     
                     mask_sem = torch.cat(mask_sem_list, dim=0)
                     save_mask_tensor(mask_sem, batch_files, batch_out_dir, "mask_semantic_only")
-                    
                     if mask_sem.shape[0] < args.batch_size:
                         mask_sem = torch.cat([mask_sem, mask_sem[-1:].repeat(args.batch_size-actual_bs, 1, 1, 1)], dim=0)
                     mask_sem = mask_sem.cuda()
@@ -557,7 +701,12 @@ def main():
                         noisy_latent=z_received_pass1, snr_db=args.snr, mask=mask_sem, x0=z0, eta=0.0,
                         conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
                     )
-                    results_batch["pass2_semantic_only"] = evaluate_and_save(model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_semantic_only", loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_dirs["pass2_semantic_only"] if FID_AVAILABLE else None)
+                    results_batch["pass2_semantic_only"] = evaluate_and_save(
+                        model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_semantic_only", 
+                        loss_fn_lpips, loss_fn_dists, loss_fn_id, 
+                        clip_scorer, 
+                        fid_dirs["pass2_semantic_only"] if FID_AVAILABLE else None
+                    )
 
                 if "pass2_random" in target_keys and args.retransmission_rate > 0.0:
                     set_seed(current_batch_seed + 1000)
@@ -568,7 +717,12 @@ def main():
                         noisy_latent=z_received_pass1, snr_db=args.snr, mask=mask_r, x0=z0, eta=0.0,
                         conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
                     )
-                    results_batch["pass2_random"] = evaluate_and_save(model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_random", loss_fn_lpips, loss_fn_dists, loss_fn_id, fid_dirs["pass2_random"] if FID_AVAILABLE else None)
+                    results_batch["pass2_random"] = evaluate_and_save(
+                        model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_random", 
+                        loss_fn_lpips, loss_fn_dists, loss_fn_id, 
+                        clip_scorer, 
+                        fid_dirs["pass2_random"] if FID_AVAILABLE else None
+                    )
 
                 for f in batch_files:
                     all_results[f] = {k: {"metrics": results_batch[k].get(f)} for k in results_batch.keys() if results_batch.get(k)}
@@ -584,13 +738,16 @@ def main():
             "pass2_random": "Pass 2 (Random)",
             "pass2_edge_rec": "Pass 2 (Edge/Rec)",
             "pass2_edge_gt": "Pass 2 (Edge/GT-Oracle)",
-            "pass2_hybrid": "Pass 2 (Hybrid U+E)"
+            "pass2_hybrid": "Pass 2 (Hybrid U+E)",
+            "pass2_smart_hybrid": "Pass 2 (Smart Hybrid AND)",
+            "pass2_oracle": "Pass 2 (Oracle Error)"
         }
         
         executed_methods = [m for m in method_labels.keys() if m == "pass1" or m in target_keys]
 
-        metric_keys = ["psnr", "lpips", "dists", "id_loss"]
-        averages = {m: {met: np.mean([all_results[f][m]["metrics"][met] for f in all_results if all_results[f].get(m) and all_results[f][m].get("metrics")]) for met in metric_keys} for m in executed_methods}
+        # --- Summary Display Update (Added CLIP) ---
+        metric_keys = ["psnr", "lpips", "dists", "id_loss", "clip"] # <--- "clip" added
+        averages = {m: {met: np.mean([all_results[f][m]["metrics"][met] for f in all_results if all_results[f].get(m) and all_results[f][m].get("metrics") and met in all_results[f][m]["metrics"]]) for met in metric_keys} for m in executed_methods}
         
         fids = {}
         if FID_AVAILABLE:
@@ -607,7 +764,12 @@ def main():
         for met in metric_keys:
              valid_values = [averages[m][met] for m in executed_methods if m in averages and not np.isnan(averages[m][met])]
              if valid_values:
-                 best_scores[met] = (max if met == "psnr" else min)(valid_values)
+                 # PSNR と CLIP は高い方が良い (max)
+                 # LPIPS, DISTS, ID Loss は低い方が良い (min)
+                 if met in ["psnr", "clip"]:
+                     best_scores[met] = max(valid_values)
+                 else:
+                     best_scores[met] = min(valid_values)
              else:
                  best_scores[met] = -1
 
@@ -615,14 +777,17 @@ def main():
         best_fid = min(valid_fids) if valid_fids else None
 
         GREEN, BOLD, RESET = "\033[92m", "\033[1m", "\033[0m"
-        print("\n" + "="*120 + f"\n  SUMMARY (N={len(all_results)})\n" + "="*120)
-        print(f"{'Method':<30} | {'PSNR':<10} | {'LPIPS':<10} | {'DISTS':<10} | {'ID Loss':<10} | {'FID':<10}")
-        print("-" * 120)
+        print("\n" + "="*135 + f"\n  SUMMARY (N={len(all_results)})\n" + "="*135)
+        print(f"{'Method':<30} | {'PSNR':<10} | {'LPIPS':<10} | {'DISTS':<10} | {'ID Loss':<10} | {'CLIP':<10} | {'FID':<10}")
+        print("-" * 135)
         for m in executed_methods:
             name = method_labels[m]
             if m not in averages: continue
             row = f"{name:<30}"
             for met in metric_keys:
+                if met not in averages[m]: 
+                    row += f" | {'N/A':<10}"
+                    continue
                 val = averages[m][met]
                 s = f"{val:.4f}"
                 is_best = abs(val - best_scores[met]) < 1e-7 if best_scores[met] != -1 else False
@@ -632,8 +797,36 @@ def main():
                 row += f" | {GREEN}{BOLD}*{f_val:.4f}*{RESET}" if best_fid and abs(f_val - best_fid) < 1e-7 else f" | {f_val:.4f}  "
             else: row += f" | {'N/A':<10}"
             print(row)
-        print("-" * 120)
-        with open(json_path, 'w') as f: json.dump({"summary": {"averages": averages, "fid": fids}}, f, indent=4)
+        print("-" * 135)
+
+        # -------------------------------------------------------------
+        # 【修正 2】 JSONの読み込み・マージ・保存処理
+        # -------------------------------------------------------------
+        output_data = {"summary": {"averages": {}, "fid": {}}}
+
+        # 1. 既存ファイルの読み込み (存在する場合)
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r') as f:
+                    output_data = json.load(f)
+            except Exception as e:
+                print(f"Warning: Could not load existing JSON ({e}). Creating new one.")
+        
+        # 構造の初期化保証
+        if "summary" not in output_data: output_data["summary"] = {}
+        if "averages" not in output_data["summary"]: output_data["summary"]["averages"] = {}
+        if "fid" not in output_data["summary"]: output_data["summary"]["fid"] = {}
+
+        # 2. 今回の結果を追記 (update)
+        output_data["summary"]["averages"].update(averages)
+        output_data["summary"]["fid"].update(fids)
+
+        # 3. 保存
+        with open(json_path, 'w') as f:
+            json.dump(output_data, f, indent=4)
+        
+        print(f"Metrics saved to: {json_path}")
+
     except Exception as e: print(f"Error: {e}"); raise e
 
 if __name__ == "__main__": main()
