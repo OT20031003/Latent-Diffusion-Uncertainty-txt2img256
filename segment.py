@@ -6,7 +6,7 @@ from PIL import Image
 from transformers import Mask2FormerImageProcessor, Mask2FormerForUniversalSegmentation
 
 # 1. 画像の準備
-url = "http://images.cocodataset.org/val2017/000000000139.jpg"
+url = "http://images.cocodataset.org/val2017/000000000885.jpg"
 image = Image.open(requests.get(url, stream=True).raw)
 
 # 2. モデルとプロセッサのロード

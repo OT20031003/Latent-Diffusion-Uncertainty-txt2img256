@@ -93,12 +93,32 @@ def load_model_from_config(config, ckpt, verbose=False):
     return model
 
 def add_awgn_channel(latent, snr_db):
-    """AWGNチャネルのシミュレーション"""
+    """
+    AWGNチャネルのシミュレーション
+    【変更点】画像潜在表現の「下半分」にのみノイズを付加する
+    latent shape: (B, C, H, W)
+    """
+    b, c, h, w = latent.shape
+    
+    # 1. 信号電力の計算（全体平均を使用）
+    # dim=(1,2,3) で (B, 1, 1, 1) の形状にする
     sig_power = torch.mean(latent ** 2, dim=(1, 2, 3), keepdim=True)
+    
+    # 2. ノイズ電力と標準偏差の計算
+    # SNR = 10 * log10(P_signal / P_noise) => P_noise = P_signal / 10^(SNR/10)
     noise_power = sig_power / (10 ** (snr_db / 10.0))
     noise_std = torch.sqrt(noise_power)
-    noise = torch.randn_like(latent) * noise_std
-    noisy_latent = latent + noise
+
+    noisy_latent = latent.clone()
+    
+    # 3. 高さ方向の中心インデックスを計算
+    h_half = h // 2
+    
+    # 4. 下半分 (h_half以降) にのみノイズを生成して加算
+    # noise_std は (B, 1, 1, 1) なのでブロードキャストされる
+    noise = torch.randn_like(latent[:, :, h_half:, :]) * noise_std
+    noisy_latent[:, :, h_half:, :] += noise
+
     return noisy_latent
 
 def calculate_psnr(img1, img2):
@@ -195,10 +215,15 @@ def create_retransmission_mask(uncertainty_map, rate):
     return mask
 
 # =========================================================
-#  新手法1: Segment-based Feedback (SBF)
+#  新手法: Segment-based Feedback (SBF)
 # =========================================================
 def create_segment_feedback_mask(feedback_mask_binary, segmentation_map, rate):
-    """SBF"""
+    """
+    【SBF】セグメントごとの不確実性平均に基づく再送マスク生成
+    - feedback_mask_binary: 受信側からのFB (0 or 1) [B, 1, H_lat, W_lat]
+    - segmentation_map: 送信側のセグメンテーション (Pixel Level) [B, H_img, W_img] (numpy or tensor)
+    - rate: 再送率 (Budget)
+    """
     if feedback_mask_binary is None or segmentation_map is None:
         return None
 
@@ -206,191 +231,93 @@ def create_segment_feedback_mask(feedback_mask_binary, segmentation_map, rate):
     device = feedback_mask_binary.device
     final_mask = torch.zeros_like(feedback_mask_binary)
     
+    # ピクセル数予算
     total_pixels = h_lat * w_lat
     budget = int(total_pixels * rate)
     if budget == 0:
         return final_mask
 
     for i in range(b):
+        # 1. セグメンテーションマップを潜在空間サイズにリサイズ
+        # segmentation_map[i] が TensorかNumpyかを確認して統一
         seg = segmentation_map[i]
-        if isinstance(seg, torch.Tensor): seg = seg.cpu().numpy()
+        if isinstance(seg, torch.Tensor):
+            seg = seg.cpu().numpy()
+        
+        # リサイズ (Nearest Neighbor)
         seg_lat = cv2.resize(seg, (w_lat, h_lat), interpolation=cv2.INTER_NEAREST)
+        
+        # Feedback Mask (0 or 1)
         f_mask = feedback_mask_binary[i, 0].cpu().numpy()
         
+        # ユニークなクラスIDを取得 (背景含む)
         unique_ids = np.unique(seg_lat)
+        
         segment_stats = []
         for class_id in unique_ids:
+            # マスク領域
             mask_area = (seg_lat == class_id)
             size = np.sum(mask_area)
             if size == 0: continue
+            
+            # 領域内のFB(1)の数
             ones_count = np.sum(f_mask[mask_area])
+            
+            # 平均不確実性 (1の割合)
             avg_uncertainty = ones_count / size
+            
             segment_stats.append({
-                'id': class_id, 'avg': avg_uncertainty, 'mask': mask_area, 'size': size
+                'id': class_id,
+                'avg': avg_uncertainty,
+                'mask': mask_area,
+                'size': size
             })
             
+        # 2. 平均不確実性が高い順にソート
         segment_stats.sort(key=lambda x: x['avg'], reverse=True)
         
+        # 3. 予算配分
         current_usage = 0
         batch_mask = np.zeros((h_lat, w_lat), dtype=np.float32)
         
         for stat in segment_stats:
-            if stat['avg'] <= 0.0: continue
+            # 平均スコアが0 (FBで誰も再送を希望していない) ならスキップするか検討
+            # ここでは「受信側が少しでも不安なら」拾うため、0より大きければ候補
+            if stat['avg'] <= 0.0:
+                continue
+
             if current_usage + stat['size'] <= budget:
+                # まるごと追加
                 batch_mask[stat['mask']] = 1.0
                 current_usage += stat['size']
             else:
+                # 予算オーバーする場合の Pruning (間引き)
                 remaining = budget - current_usage
                 if remaining > 0:
+                    # このセグメント内で、元のFBが1だった場所を優先的に採用
                     mask_area = stat['mask']
-                    overlap = (mask_area & (f_mask > 0.5))
+                    overlap = (mask_area & (f_mask > 0.5)) # FBで1だった場所
+                    
                     overlap_indices = np.argwhere(overlap)
                     non_overlap_indices = np.argwhere(mask_area & (~(f_mask > 0.5)))
+                    
+                    # 優先順位: FBが1の場所 -> FBが0の場所
                     candidates = []
-                    if len(overlap_indices) > 0: candidates.extend([tuple(x) for x in overlap_indices])
-                    if len(non_overlap_indices) > 0: candidates.extend([tuple(x) for x in non_overlap_indices])
+                    if len(overlap_indices) > 0:
+                        candidates.extend([tuple(x) for x in overlap_indices])
+                    if len(non_overlap_indices) > 0:
+                        candidates.extend([tuple(x) for x in non_overlap_indices])
+                        
+                    # 詰める
                     for r, c in candidates[:remaining]:
                         batch_mask[r, c] = 1.0
-                current_usage = budget
-                break
+                    
+                current_usage = budget # 満タン
+                break # 終了
         
         final_mask[i, 0] = torch.from_numpy(batch_mask).to(device)
+
     return final_mask
-
-# =========================================================
-#  新手法2: CLIP Segment Importance with Proportional Allocation & Scatter
-# =========================================================
-def create_clip_priority_mask(batch_images_tensor, segmentation_map, clip_model, clip_processor, rate, target_hw):
-    """
-    CLIP重要度に基づく比例配分 + エッジ優先拡散サンプリング (PSS)
-    
-    Returns:
-        mask_tensor: 再送用マスク
-        importance_map_tensor: 重要度可視化用マップ
-    """
-    if segmentation_map is None: return None, None
-    
-    device = clip_model.device
-    b = len(batch_images_tensor) # tensor batch size
-    h_lat, w_lat = target_hw
-    
-    final_mask_tensor = torch.zeros((b, 1, h_lat, w_lat), device=batch_images_tensor.device)
-    importance_map_tensor = torch.zeros((b, 1, h_lat, w_lat), device=batch_images_tensor.device)
-    
-    total_budget_pixels = int(h_lat * w_lat * rate)
-    if total_budget_pixels == 0: return final_mask_tensor, importance_map_tensor
-
-    # 画像サイズでの処理用
-    h_img, w_img = batch_images_tensor.shape[2], batch_images_tensor.shape[3]
-
-    for i in range(b):
-        # 1. データの準備
-        img_t = batch_images_tensor[i]
-        img_np_full = (torch.clamp((img_t + 1.0)/2.0, 0.0, 1.0).cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        img_pil = Image.fromarray(img_np_full)
-
-        seg = segmentation_map[i]
-        if isinstance(seg, torch.Tensor): seg = seg.cpu().numpy()
-        seg_img = cv2.resize(seg, (w_img, h_img), interpolation=cv2.INTER_NEAREST)
-        
-        # 2. ベースライン特徴量
-        inputs = clip_processor(images=img_pil, return_tensors="pt").to(device)
-        with torch.no_grad():
-            emb_original = clip_model.get_image_features(**inputs)
-            emb_original = emb_original / emb_original.norm(p=2, dim=-1, keepdim=True)
-        
-        unique_ids = np.unique(seg_img)
-        segment_data = []
-        total_score_sum = 0.0
-        
-        # 3. 各セグメントのスコア計算
-        for class_id in unique_ids:
-            mask_bool = (seg_img == class_id)
-            area = np.sum(mask_bool)
-            if area == 0: continue
-            
-            # ノイズマスク
-            noise = np.random.randint(0, 255, (h_img, w_img, 3), dtype=np.uint8)
-            masked_img_np = img_np_full.copy()
-            masked_img_np[mask_bool] = noise[mask_bool]
-            
-            inputs_m = clip_processor(images=Image.fromarray(masked_img_np), return_tensors="pt").to(device)
-            with torch.no_grad():
-                emb_masked = clip_model.get_image_features(**inputs_m)
-                emb_masked = emb_masked / emb_masked.norm(p=2, dim=-1, keepdim=True)
-            
-            similarity = (emb_original @ emb_masked.T).item()
-            raw_diff = 1.0 - similarity
-            
-            # 面積正規化スコア (S_i)
-            norm_score = raw_diff / (np.sqrt(area) + 1e-6)
-            
-            # Latentサイズでのマスク準備
-            mask_full_uint = mask_bool.astype(np.uint8)
-            mask_lat = cv2.resize(mask_full_uint, (w_lat, h_lat), interpolation=cv2.INTER_NEAREST) > 0
-            area_lat = np.sum(mask_lat)
-
-            if area_lat > 0:
-                segment_data.append({
-                    'id': class_id,
-                    'score': norm_score,
-                    'mask_lat': mask_lat,
-                    'area_lat': area_lat
-                })
-                total_score_sum += norm_score
-        
-        # 4. 予算配分とマスク生成
-        batch_mask = np.zeros((h_lat, w_lat), dtype=np.float32)
-        batch_imp_map = np.zeros((h_lat, w_lat), dtype=np.float32)
-        
-        if total_score_sum > 0:
-            for item in segment_data:
-                # A. 重要度マップへの記録
-                batch_imp_map[item['mask_lat']] = item['score']
-
-                # B. 比例配分予算 (Allocated Budget)
-                weight = item['score'] / total_score_sum
-                target_pixels = int(total_budget_pixels * weight)
-                
-                # 面積を超えないようにクリップ
-                n_pixels_to_send = min(target_pixels, item['area_lat'])
-                
-                if n_pixels_to_send <= 0:
-                    continue
-                
-                # C. マスク内のピクセル選択 (Edge -> Scatter)
-                mask_lat = item['mask_lat']
-                
-                # C-1. エッジ抽出
-                m_u8 = mask_lat.astype(np.uint8) * 255
-                kernel = np.ones((3,3), np.uint8)
-                gradient = cv2.morphologyEx(m_u8, cv2.MORPH_GRADIENT, kernel)
-                edge_bool = (gradient > 0) & mask_lat
-                inner_bool = mask_lat & (~edge_bool)
-                
-                edge_indices = np.argwhere(edge_bool)
-                inner_indices = np.argwhere(inner_bool)
-                
-                # C-2. 内部ピクセルのシャッフル (散らす)
-                np.random.shuffle(inner_indices)
-                
-                # C-3. リスト結合 (Edge優先)
-                candidates = []
-                if len(edge_indices) > 0:
-                    candidates.extend([tuple(x) for x in edge_indices])
-                if len(inner_indices) > 0:
-                    candidates.extend([tuple(x) for x in inner_indices])
-                
-                # C-4. 割り当て分だけ取得
-                for idx in range(min(len(candidates), n_pixels_to_send)):
-                    r, c = candidates[idx]
-                    batch_mask[r, c] = 1.0
-
-        final_mask_tensor[i, 0] = torch.from_numpy(batch_mask).to(device)
-        importance_map_tensor[i, 0] = torch.from_numpy(batch_imp_map).to(device)
-
-    return final_mask_tensor, importance_map_tensor
-
 
 def create_hybrid_mask(uncertainty_map, edge_map, rate, alpha=0.7, beta=0.3):
     """既存のHybrid手法"""
@@ -528,21 +455,6 @@ def save_mask_tensor(mask, batch_files, batch_out_dir, prefix):
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         img.save(save_path)
 
-def save_importance_map_tensor(imp_map, batch_files, batch_out_dir, prefix):
-    """重要度マップを正規化して保存"""
-    for j, fname in enumerate(batch_files):
-        m = imp_map[j, 0].cpu().numpy()
-        # 0-1にMinMax正規化
-        if m.max() > m.min():
-            m_norm = (m - m.min()) / (m.max() - m.min() + 1e-8)
-        else:
-            m_norm = m
-        m_img = (m_norm * 255).astype(np.uint8)
-        img = Image.fromarray(m_img, mode='L')
-        save_path = os.path.join(batch_out_dir, str(j), f"{os.path.splitext(fname)[0]}_{prefix}.png")
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        img.save(save_path)
-
 def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix, 
                       loss_fn_lpips, loss_fn_dists, loss_fn_id, 
                       clip_scorer=None, fid_save_dir=None):
@@ -574,9 +486,10 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
 
 def main():
     global CLIP_AVAILABLE
-    parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation (Text2Img)")
+    parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation (Partial Noise)")
     parser.add_argument("--input_dir", type=str, default="input_dir")
-    parser.add_argument("--output_dir", type=str, default="results_text2img/")
+    # 出力ディレクトリをPartial Noise用に変更
+    parser.add_argument("--output_dir", type=str, default="results_partial_noise/")
     parser.add_argument("--snr", type=float, default=-3.0)
     parser.add_argument("-r","--retransmission_rate", type=float, default=0.2)
     parser.add_argument("--config", type=str, default="models/ldm/text2img256/config.yaml")
@@ -591,15 +504,16 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--scale", type=float, default=5.0)
 
-    # "clip_seg" (CLIP Importance + Edge Priority) を追加
+    # "sbf" (Segment Based Feedback) を追加
     available_methods = ["structural", "raw", "wacv", "semantic", "semantic_only", "random", 
-                         "edge_rec", "edge_gt", "hybrid", "smart_hybrid", "oracle", "sbf", "clip_seg"]
+                         "edge_rec", "edge_gt", "hybrid", "smart_hybrid", "oracle", "sbf"]
     parser.add_argument("--target_methods", nargs='+', default=["all"], 
                         help=f"Select methods. Options: {', '.join(available_methods)}")
     
     args = parser.parse_args()
 
-    print("\n[Simulation Mode] Prompt forced to empty string ('') for unconditional conditioning.")
+    print("\n[Simulation Mode] Partial Noise: Noise added only to the BOTTOM HALF of the latent representation.")
+    print("[Conditioning] Prompt forced to empty string ('') for unconditional conditioning.")
     forced_prompt = "" 
 
     method_name_map = {
@@ -614,8 +528,7 @@ def main():
         "hybrid": "pass2_hybrid",
         "smart_hybrid": "pass2_smart_hybrid",
         "oracle": "pass2_oracle",
-        "sbf": "pass2_sbf",
-        "clip_seg": "pass2_clip_seg" # 新規追加
+        "sbf": "pass2_sbf"  # 新規追加
     }
 
     if "all" in args.target_methods:
@@ -647,19 +560,18 @@ def main():
             print(f"Loading FaceParser for semantic weighting...")
             face_parser = FaceParser(args.face_model_path, device='cuda')
 
-    # Mask2Former (For SBF and CLIP Seg)
-    # CLIP Seg も Mask2Formerを利用する
-    if "pass2_sbf" in target_keys or "pass2_clip_seg" in target_keys:
+    # Mask2Former (For SBF)
+    if "pass2_sbf" in target_keys:
         if MASK2FORMER_AVAILABLE:
             try:
-                print(f"Loading Mask2Former for Seg-based methods ({args.mask2former_model})...")
+                print(f"Loading Mask2Former for SBF ({args.mask2former_model})...")
                 mask2former_processor = Mask2FormerImageProcessor.from_pretrained(args.mask2former_model)
                 mask2former_model = Mask2FormerForUniversalSegmentation.from_pretrained(args.mask2former_model).cuda()
                 mask2former_model.eval()
             except Exception as e:
-                print(f"Failed to load Mask2Former: {e}. Methods depending on it might fail or downgrade.")
+                print(f"Failed to load Mask2Former: {e}. SBF will try to use FaceParser as fallback.")
         else:
-            print("Mask2Former not available.")
+            print("Mask2Former not available. SBF will try to use FaceParser as fallback.")
 
     # Metrics
     loss_fn_lpips = lpips.LPIPS(net='alex').cuda().eval() if LPIPS_AVAILABLE else None
@@ -670,15 +582,10 @@ def main():
     if CLIP_AVAILABLE:
         print("Loading CLIP Model (openai/clip-vit-base-patch32)...")
         try:
-            local_clip_path = "openai/clip-vit-base-patch32"
-            try:
-                clip_model = CLIPModel.from_pretrained(local_clip_path).cuda().eval()
-                clip_processor = CLIPProcessor.from_pretrained(local_clip_path)
-            except:
-                local_clip_path = "/mnt/d/ai_models/clip-vit-base-patch32" # Fallback
-                clip_model = CLIPModel.from_pretrained(local_clip_path).cuda().eval()
-                clip_processor = CLIPProcessor.from_pretrained(local_clip_path)
-
+            local_clip_path = "/mnt/d/ai_models/clip-vit-base-patch32"
+            print(f"Loading CLIP from: {local_clip_path}")
+            clip_model = CLIPModel.from_pretrained(local_clip_path).cuda().eval()
+            clip_processor = CLIPProcessor.from_pretrained(local_clip_path)
             clip_scorer = (clip_model, clip_processor)
         except Exception as e:
             print(f"Failed to load CLIP model: {e}")
@@ -737,6 +644,8 @@ def main():
 
                 z0 = model.encode_first_stage(batch_input)
                 z0 = z0.mode() if not isinstance(z0, torch.Tensor) else z0
+                
+                # --- APPLY PARTIAL NOISE (BOTTOM HALF) ---
                 z_received_pass1 = add_awgn_channel(z0, args.snr)
 
                 # Pass 1 Sampling
@@ -818,14 +727,19 @@ def main():
                         )
 
                 # =================================================================
-                # Segmentation Preparation (Common for SBF and CLIP Seg)
+                # 【新規追加】 SBF: Segment-based Feedback Retransmission
                 # =================================================================
-                seg_maps = []
-                if ("pass2_sbf" in target_keys or "pass2_clip_seg" in target_keys) and args.retransmission_rate > 0.0:
+                if "pass2_sbf" in target_keys and args.retransmission_rate > 0.0 and uncertainty_map_for_sem is not None:
+                    set_seed(current_batch_seed + 1000)
+                    
+                    # 1. 送信側セグメンテーションマップ作成 (Mask2Former > FaceParser)
+                    seg_maps = []
                     if mask2former_model and mask2former_processor:
                         # Mask2Former Inference
+                        # 画像をPILにしてProcessorへ
                         pil_images = []
                         for b_idx in range(actual_bs):
+                            # [-1,1] -> [0,255] uint8 -> PIL
                             t_img = valid_batch_input[b_idx]
                             img_np = (torch.clamp((t_img + 1.0) / 2.0, 0.0, 1.0).cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
                             pil_images.append(Image.fromarray(img_np))
@@ -833,69 +747,43 @@ def main():
                         inputs = mask2former_processor(images=pil_images, return_tensors="pt").to(mask2former_model.device)
                         m2f_out = mask2former_model(**inputs)
                         
+                        # Panoptic Segmentation Result Retrieval
+                        # target_sizes is needed to resize back to original
                         target_sizes = [(256, 256) for _ in range(actual_bs)]
                         results_m2f = mask2former_processor.post_process_panoptic_segmentation(m2f_out, target_sizes=target_sizes)
                         
                         for r in results_m2f:
                             seg_maps.append(r["segmentation"]) # Tensor [H, W]
                             
-                    elif face_parser and "pass2_sbf" in target_keys: # SBF Fallback
+                    elif face_parser:
+                        # FaceParser Inference
                         for b_idx in range(actual_bs):
                             p = face_parser.get_parsing_map(valid_batch_input[b_idx:b_idx+1])
                             seg_maps.append(p)
-
-                # =================================================================
-                # SBF: Segment-based Feedback Retransmission
-                # =================================================================
-                if "pass2_sbf" in target_keys and args.retransmission_rate > 0.0 and len(seg_maps) > 0 and uncertainty_map_for_sem is not None:
-                    set_seed(current_batch_seed + 1000)
-                    fb_mask = create_retransmission_mask(uncertainty_map_for_sem, args.retransmission_rate)
-                    sbf_mask = create_segment_feedback_mask(fb_mask, seg_maps, args.retransmission_rate)
+                    else:
+                        print("Warning: No segmentation model available for SBF. Skipping.")
+                        
                     
-                    if sbf_mask is not None:
-                        save_mask_tensor(sbf_mask, batch_files, batch_out_dir, "mask_sbf")
-                        s, _ = sampler.sample_inpainting_awgn(
-                            S=args.ddim_steps, batch_size=args.batch_size, shape=z0.shape[1:], 
-                            noisy_latent=z_received_pass1, snr_db=args.snr, mask=sbf_mask, x0=z0, eta=0.0,
-                            conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
-                        )
-                        results_batch["pass2_sbf"] = evaluate_and_save(
-                            model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_sbf", 
-                            loss_fn_lpips, loss_fn_dists, loss_fn_id, clip_scorer, fid_dirs["pass2_sbf"] if FID_AVAILABLE else None
-                        )
-
-                # =================================================================
-                # 【修正版】 CLIP Segmentation Importance + Edge Priority (PSS)
-                # =================================================================
-                if "pass2_clip_seg" in target_keys and args.retransmission_rate > 0.0 and len(seg_maps) > 0 and CLIP_AVAILABLE and clip_scorer:
-                    set_seed(current_batch_seed + 1000)
-                    print(f"Calculating CLIP Segmentation Importance for batch {batch_idx}...")
-                    
-                    # 1. マスク生成 (戻り値に重要度マップを追加)
-                    clip_mask, imp_map = create_clip_priority_mask(
-                        valid_batch_input, 
-                        seg_maps, 
-                        clip_scorer[0], # model 
-                        clip_scorer[1], # processor
-                        args.retransmission_rate, 
-                        (z0.shape[2], z0.shape[3]) # target latent size
-                    )
-
-                    if clip_mask is not None:
-                        save_mask_tensor(clip_mask, batch_files, batch_out_dir, "mask_clip_seg")
-                        # 2. 重要度マップの保存
-                        if imp_map is not None:
-                            save_importance_map_tensor(imp_map, batch_files, batch_out_dir, "importance_clip_seg")
-
-                        s, _ = sampler.sample_inpainting_awgn(
-                            S=args.ddim_steps, batch_size=args.batch_size, shape=z0.shape[1:], 
-                            noisy_latent=z_received_pass1, snr_db=args.snr, mask=clip_mask, x0=z0, eta=0.0,
-                            conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
-                        )
-                        results_batch["pass2_clip_seg"] = evaluate_and_save(
-                            model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_clip_seg", 
-                            loss_fn_lpips, loss_fn_dists, loss_fn_id, clip_scorer, fid_dirs["pass2_clip_seg"] if FID_AVAILABLE else None
-                        )
+                    if len(seg_maps) > 0:
+                        # 2. 受信側フィードバックマスク生成 (Feedback Binary)
+                        # ここでは不確実性マップの上位 rate 分を「1」とするマスクをフィードバックとして想定
+                        # SBFはこの「バラバラの1」を「セグメント単位」に整形する
+                        fb_mask = create_retransmission_mask(uncertainty_map_for_sem, args.retransmission_rate)
+                        
+                        # 3. SBFマスク生成
+                        sbf_mask = create_segment_feedback_mask(fb_mask, seg_maps, args.retransmission_rate)
+                        
+                        if sbf_mask is not None:
+                            save_mask_tensor(sbf_mask, batch_files, batch_out_dir, "mask_sbf")
+                            s, _ = sampler.sample_inpainting_awgn(
+                                S=args.ddim_steps, batch_size=args.batch_size, shape=z0.shape[1:], 
+                                noisy_latent=z_received_pass1, snr_db=args.snr, mask=sbf_mask, x0=z0, eta=0.0,
+                                conditioning=c, unconditional_guidance_scale=args.scale, unconditional_conditioning=uc
+                            )
+                            results_batch["pass2_sbf"] = evaluate_and_save(
+                                model.decode_first_stage(s)[:actual_bs], valid_batch_input, batch_files, batch_out_dir, "pass2_sbf", 
+                                loss_fn_lpips, loss_fn_dists, loss_fn_id, clip_scorer, fid_dirs["pass2_sbf"] if FID_AVAILABLE else None
+                            )
 
                 # =================================================================
                 # Existing Semantic Methods (Legacy FaceParser)
@@ -984,8 +872,7 @@ def main():
             "pass2_hybrid": "Pass 2 (Hybrid U+E)",
             "pass2_smart_hybrid": "Pass 2 (Smart Hybrid AND)",
             "pass2_oracle": "Pass 2 (Oracle Error)",
-            "pass2_sbf": "Pass 2 (SBF/SegFeedback)",
-            "pass2_clip_seg": "Pass 2 (CLIP Seg/EdgePrio)" # 新規
+            "pass2_sbf": "Pass 2 (SBF/SegFeedback)" # 新規
         }
         
         executed_methods = [m for m in method_labels.keys() if m == "pass1" or m in target_keys]

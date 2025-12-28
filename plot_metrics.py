@@ -16,23 +16,24 @@ OUTPUT_IMAGE = "metrics_summary_plot.png"
 
 # 1. プロットしたいSNRのリスト
 # None または空リスト [] にすると、すべてのSNRをプロットします。
-TARGET_SNRS = [1.0, 2.0, 3.0, 4.0, 5.0]
-TARGET_SNRS = [-5.0,-4.0, -3.0,-2.0, 0.0,-1.0,1.0, 2.0, 3.0, 4.0, 5.0]
-# TARGET_SNRS = None 
+# TARGET_SNRS = [1.0, 2.0, 3.0, 4.0, 5.0]
+TARGET_SNRS = [-5.0, -4.0, -3.0, -2.0]
+TARGET_SNRS = None 
 
 # 2. プロットしたい手法のリスト
 # 必要なものだけコメントアウトを外して選んでください。
 TARGET_METHODS = [
-    #"pass1",
-    "pass2_structural",
-    "pass2_raw",
-    "pass2_random",       # <--- 追加しました
-    "pass2_edge_rec",
+    "pass1",
+    #"pass2_structural",
+    #"pass2_raw",
+    "pass2_random",
+    #"pass2_edge_rec",
     "pass2_edge_gt",
-    "pass2_hybrid",
-    "pass2_smart_hybrid"
-    # "pass2_sbf",
-    # "pass2_oracle"
+    #"pass2_hybrid",
+    "pass2_smart_hybrid",
+    #"pass2_sbf",       # 既存提案手法
+    #"pass2_clip_seg",  # <--- 【新規追加】 CLIP PSS 手法
+    "pass2_oracle"
 ]
 # TARGET_METHODS = None  # 全てプロットする場合はこちら
 
@@ -44,24 +45,30 @@ METHOD_LABELS = {
     "pass1": "Pass 1 (Initial)",
     "pass2_structural": "Struct",
     "pass2_raw": "Raw",
-    "pass2_random": "Random",  # <--- 追加しました
+    "pass2_random": "Random",
     "pass2_edge_rec": "Edge (Rec)",
     "pass2_edge_gt": "Edge (GT)",
     "pass2_hybrid": "Hybrid",
     "pass2_smart_hybrid": "Smart Hybrid",
-    "pass2_sbf": "SBF (Proposed)",
+    "pass2_sbf": "SBF ",
+    "pass2_clip_seg": "CLIP Seg", # <--- ラベル追加
     "pass2_oracle": "Oracle"
 }
 
 # 線のスタイル設定
 STYLE_CONFIG = {
     "pass1": {"color": "black", "linestyle": "--", "marker": "x", "linewidth": 1.5},
+    
+    # --- 提案手法群 (目立つ色) ---
     "pass2_sbf": {"color": "red", "linestyle": "-", "marker": "o", "linewidth": 2.5},
+    "pass2_clip_seg": {"color": "magenta", "linestyle": "-", "marker": "D", "linewidth": 2.5}, # <--- スタイル追加
     "pass2_smart_hybrid": {"color": "orange", "linestyle": "-", "marker": "s", "linewidth": 2.0},
+    
+    # --- 比較対象 ---
     "pass2_oracle": {"color": "blue", "linestyle": ":", "marker": "*", "linewidth": 1.5},
     "pass2_structural": {"color": "green", "linestyle": "-.", "marker": "^", "linewidth": 1.5},
     "pass2_hybrid": {"color": "purple", "linestyle": "-.", "marker": "v", "linewidth": 1.5},
-    "pass2_random": {"color": "gray", "linestyle": "--", "marker": "d", "linewidth": 1.5}, # <--- 追加 (グレーの点線)
+    "pass2_random": {"color": "gray", "linestyle": "--", "marker": "d", "linewidth": 1.5},
     "pass2_raw": {"color": "brown", "linestyle": ":", "marker": ".", "linewidth": 1.5},
     "pass2_edge_gt": {"color": "teal", "linestyle": "-.", "marker": "p", "linewidth": 1.5},
 }
@@ -157,7 +164,9 @@ def plot_results(data_store):
     else:
         # 指定がない場合は自動整列
         sorted_methods = sorted(list(available_methods))
-        priority_order = ["pass1", "pass2_sbf", "pass2_smart_hybrid", "pass2_oracle"]
+        # 優先順位リスト
+        priority_order = ["pass1", "pass2_sbf", "pass2_clip_seg", "pass2_smart_hybrid", "pass2_oracle"]
+        
         remaining = [m for m in sorted_methods if m not in priority_order]
         plot_methods = priority_order + remaining
 
