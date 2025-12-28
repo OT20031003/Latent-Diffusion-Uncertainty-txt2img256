@@ -17,22 +17,22 @@ OUTPUT_IMAGE = "metrics_summary_plot.png"
 # 1. プロットしたいSNRのリスト
 # None または空リスト [] にすると、すべてのSNRをプロットします。
 TARGET_SNRS = [1.0, 2.0, 3.0, 4.0, 5.0]
-TARGET_SNRS = [-5.0,-4.0, -3.0,-2.0]
+TARGET_SNRS = [-5.0,-4.0, -3.0,-2.0, -1.0,1.0, 2.0, 3.0, 4.0, 5.0]
 # TARGET_SNRS = None 
 
 # 2. プロットしたい手法のリスト
 # 必要なものだけコメントアウトを外して選んでください。
 TARGET_METHODS = [
-    #"pass1",
+    "pass1",
     "pass2_structural",
     "pass2_raw",
     "pass2_random",       # <--- 追加しました
-    # "pass2_edge_rec",
+    "pass2_edge_rec",
     "pass2_edge_gt",
-    # "pass2_hybrid",
+    "pass2_hybrid",
     "pass2_smart_hybrid",
-    "pass2_sbf"
-    #"pass2_oracle"
+    "pass2_sbf",
+    "pass2_oracle"
 ]
 # TARGET_METHODS = None  # 全てプロットする場合はこちら
 
