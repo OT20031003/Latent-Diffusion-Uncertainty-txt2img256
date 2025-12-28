@@ -39,7 +39,15 @@ python img2img.py \
 ```
 主な引数引数説明--configモデル設定ファイル（例: models/ldm/text2img256/config.yaml）--ckpt学習済みモデルのチェックポイント（例: models/ldm/text2img256/model.ckpt）--input_dir入力画像のディレクトリ（例: COCOの検証データなど）--snr通信路のSN比 (dB)。値が小さいほどノイズが強くなります（例: -5.0 〜 5.0）。-r, --retransmission_rate再送予算 (0.0 〜 1.0)。画像の何割のピクセルを再送するかを指定します。--target_methods比較する手法を指定。all で全手法を実行、または個別に指定（smart_hybrid, oracle 等）。--struct_alphaStructural手法での不確実性とランダムノイズの混合比。--hybrid_alpha / --betaHybrid手法での不確実性とエッジ情報の重み付け。
 
-📊 比較手法 (Benchmarks / Target Methods)--target_methods で指定可能な戦略一覧です。メソッド名説明structural構造的不確実性: 時間的な不確実性マップを平滑化し、構造的な欠損を優先して再送します。rawRaw Uncertainty: 拡散モデルのサンプリング過程で得られる生の不確実性を使用します。smart_hybridSmart Hybrid (提案手法): 不確実性とエッジ/セマンティック情報を賢く統合した手法です。semanticSemantic Weighted: 受信側の不確実性と、セマンティック重要度（物体領域など）を掛け合わせます。edge_recEdge (Rec): 再構成画像から抽出したエッジ周辺を再送します。edge_gtEdge (GT): Oracle手法。正解画像のエッジを使用する理論的上限値です。oracleOracle Error: 実際の誤差（Ground Truthとの差分）を知っていると仮定した理想的な再送戦略。randomRandom: 領域をランダムに選択するベースラインです。
+### 📊 比較手法 (Benchmarks / Target Methods)--target_methods で指定可能な戦略一覧です。メソッド名説明
 
-### 実験結果
+structural構造的不確実性: 時間的な不確実性マップを平滑化し、構造的な欠損を優先して再送します。
+
+rawRaw Uncertainty: 拡散モデルのサンプリング過程で得られる生の不確実性を使用します。
+smart_hybridSmart Hybrid (提案手法): 不確実性とエッジ/セマンティック情報を賢く統合した手法です。semanticSemantic Weighted: 受信側の不確実性と、セマンティック重要度（物体領域など）を掛け合わせます。edge_recEdge (Rec): 再構成画像から抽出したエッジ周辺を再送します。
+edge_gtEdge (GT): 送信画像のエッジを使用。
+oracleOracle Error: 実際の誤差（Ground Truthとの差分）を知っていると仮定した理想的な再送戦略。
+Random: 領域をランダムに選択するベースラインです。
+
+### 実験結果 (再送率 r = 0.1, COCO 100枚)
 ![Results Comparison](assets/metrics_summary_plot.png)
