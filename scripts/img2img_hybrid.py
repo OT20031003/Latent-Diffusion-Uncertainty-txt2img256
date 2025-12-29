@@ -575,7 +575,7 @@ def evaluate_and_save(x_rec, batch_input, batch_files, batch_out_dir, suffix,
 def main():
     global CLIP_AVAILABLE
     parser = argparse.ArgumentParser(description="DiffCom Retransmission Simulation (Text2Img)")
-    parser.add_argument("--input_dir", type=str, default="data/bdd100k_clean_256")
+    parser.add_argument("--input_dir", type=str, default="input_dir")
     parser.add_argument("--output_dir", type=str, default="results_text2img/")
     parser.add_argument("--snr", type=float, default=-3.0)
     parser.add_argument("-r","--retransmission_rate", type=float, default=0.2)

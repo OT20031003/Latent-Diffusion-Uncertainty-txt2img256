@@ -16,3 +16,4 @@ RCS
 *.pdf
 clip-vit-base-patch32
 weights
+data/bdd100k_clean_256

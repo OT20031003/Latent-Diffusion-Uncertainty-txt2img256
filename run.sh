@@ -12,18 +12,18 @@ METHODS_BASE="structural raw random edge_rec edge_gt"
 
 # 新規追加手法 (提案手法 Smart Hybrid, SBF と 理論上限 Oracle)
 # ここに 'sbf' を追加しました
-METHODS_PROPOSED="smart_hybrid oracle sbf"
+METHODS_PROPOSED="smart_hybrid oracle sbf clip_seg"
 
 # 共通パラメータ
 SA_VAL="0.0"
-RATE="0.1"  # 必要に応じて変更してください（例: 0.2）
+RATE="0.2"  # 必要に応じて変更してください（例: 0.2）
 
 echo "================================================================="
 echo " STARTING RUN (Text2Img): SNR Range -5 to 5, Rate ${RATE}"
 echo "================================================================="
 
 # SNR 1, 2, 3, 4, 5 でループを実行 (元のスクリプトに合わせて {1..5})
-for SNR in {-5..0}; do
+for SNR in {-5..5}; do
 
     echo "-----------------------------------------------------------------"
     echo " Processing SNR: ${SNR} dB (Rate: ${RATE})"

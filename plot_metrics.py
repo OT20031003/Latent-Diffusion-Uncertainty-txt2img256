@@ -17,22 +17,30 @@ OUTPUT_IMAGE = "metrics_summary_plot.png"
 # 1. プロットしたいSNRのリスト
 # None または空リスト [] にすると、すべてのSNRをプロットします。
 # TARGET_SNRS = [1.0, 2.0, 3.0, 4.0, 5.0]
-TARGET_SNRS = [-5.0, -4.0, -3.0, -2.0]
+
 TARGET_SNRS = None 
+TARGET_SNRS = [1.0, 2.0, 3.0, 4.0, 5.0]
+TARGET_SNRS = [-5.0, -4.0, -3.0,-2.0, -1.0, 0.0, 1.0]
+# 1.5. 【新規追加】 プロットしたい再送率 (Rate) の設定
+# ファイル名 (例: metrics_snr-1.0_rate0.2_alpha0.0.json) の "rate" 部分を指定します。
+# 指定した Rate のファイルのみを読み込みます。
+# None に設定するとフィルタリングしません（同じSNRでRateが異なるとデータが上書きされる可能性があります）。
+TARGET_RATE = 0.1
+TARGET_RATE = 0.2
 
 # 2. プロットしたい手法のリスト
 # 必要なものだけコメントアウトを外して選んでください。
 TARGET_METHODS = [
     "pass1",
-    #"pass2_structural",
-    #"pass2_raw",
+    "pass2_structural",
+    "pass2_raw",
     "pass2_random",
-    #"pass2_edge_rec",
+    "pass2_edge_rec",
     "pass2_edge_gt",
-    #"pass2_hybrid",
+    "pass2_hybrid",
     "pass2_smart_hybrid",
-    #"pass2_sbf",       # 既存提案手法
-    #"pass2_clip_seg",  # <--- 【新規追加】 CLIP PSS 手法
+    "pass2_sbf",       # 既存提案手法
+    "pass2_clip_seg",  # <--- 【新規追加】 CLIP PSS 手法
     "pass2_oracle"
 ]
 # TARGET_METHODS = None  # 全てプロットする場合はこちら
@@ -47,7 +55,7 @@ METHOD_LABELS = {
     "pass2_raw": "Raw",
     "pass2_random": "Random",
     "pass2_edge_rec": "Edge (Rec)",
-    "pass2_edge_gt": "Edge (GT)",
+    "pass2_edge_gt": "Edge (Sender)",
     "pass2_hybrid": "Hybrid",
     "pass2_smart_hybrid": "Smart Hybrid",
     "pass2_sbf": "SBF ",
@@ -86,17 +94,37 @@ def load_data(root_dir):
 
     data_store = {} 
     print(f"Found {len(files)} metric files.")
+    
+    if TARGET_RATE is not None:
+        print(f"Filtering for Rate: {TARGET_RATE}")
 
+    count_loaded = 0
     for fpath in files:
-        # SNR抽出
+        # --- SNR抽出 ---
         match = re.search(r"snr(-?\d+\.?\d*)", fpath)
         if not match:
+            # フォルダ名も検索
             match = re.search(r"snr(-?\d+\.?\d*)", os.path.dirname(fpath))
         
         if match:
             snr = float(match.group(1))
         else:
             continue
+
+        # --- Rate抽出 (新規追加) ---
+        match_rate = re.search(r"rate(\d+\.?\d*)", fpath)
+        if match_rate:
+            file_rate = float(match_rate.group(1))
+        else:
+            # ファイル名にrateが含まれない場合、デフォルトで0.1とみなすか、
+            # あるいはrate情報なしとして扱う。
+            # ここでは既存ファイルとの互換性のため 0.1 をデフォルトとします。
+            file_rate = 0.1
+        
+        # 指定されたRate以外はスキップ
+        if TARGET_RATE is not None:
+            if not np.isclose(file_rate, TARGET_RATE):
+                continue
 
         try:
             with open(fpath, 'r') as f:
@@ -121,10 +149,13 @@ def load_data(root_dir):
                 
                 if method in fids and fids[method] is not None:
                     data_store[snr][method]["fid"] = fids[method]
+            
+            count_loaded += 1
 
         except Exception as e:
             print(f"Error reading {fpath}: {e}")
 
+    print(f"Loaded {count_loaded} files matching Rate={TARGET_RATE}.")
     return data_store
 
 # ==========================================
@@ -132,6 +163,7 @@ def load_data(root_dir):
 # ==========================================
 def plot_results(data_store):
     if not data_store:
+        print("No data stored. Please check your data directory or filters.")
         return
 
     # --- 1. SNRのフィルタリング ---
@@ -208,6 +240,7 @@ def plot_results(data_store):
         if idx == 0:
             ax.legend(fontsize='small', loc='best')
 
+    plt.suptitle(f"Metrics Summary (Rate={TARGET_RATE})", fontsize=16)
     plt.tight_layout()
     plt.savefig(OUTPUT_IMAGE, dpi=300)
     print(f"Graph saved to: {os.path.abspath(OUTPUT_IMAGE)}")
